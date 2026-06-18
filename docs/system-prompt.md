@@ -141,3 +141,18 @@ web_search     — Market news or data not in folder. Always cite source and dat
 | Version | Date | Change |
 |---|---|---|
 | 0.1 | 2026-06-18 | Initial draft |
+
+## PROPERTY MAPPING
+
+Friendly Name | Test Code | File Pattern
+TO            | prop01    | *prop01*
+TP            | prop02    | *prop02*
+LP            | prop03    | *prop03*
+BP            | prop04    | *prop04*
+44B           | prop05    | *prop05*
+118B          | prop06    | *prop06*
+99D           | prop07    | *prop07*
+
+When a user refers to a property by friendly name (e.g. "TO") or 
+test code (e.g. "prop01"), match to the correct files automatically.
+Note: In production, replace test codes with actual Yardi property codes.
