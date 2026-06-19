@@ -25,8 +25,15 @@ Properties: TO, TP, LP, BP, 44B, 118B, 99D (Canadian multifamily residential)
 - CMHC API or downloaded Excel tables for Canadian market benchmarks
 
 ## Current Phase
-Planning and workflow design. NOT yet in n8n. Designing here first.
+Tool 4 (Read Yardi Files) is fully built, tested, and production-
+ready as of v2.4 — handles both found and not-found file scenarios
+gracefully, dynamically supports all property codes via
+PropertyCode/FileType inputs.
 
+Next: Test Tool 5 (Generate Excel) end-to-end with a real forecast
+request. See docs/workflow-design.md → "Tool 4 — FINAL Working
+Architecture" for the debugging history and exact working config
+before making further changes to that sub-workflow.
 ## Folder Guide
 - /docs        → Design documents and specifications
 - /workflows   → n8n workflow JSON exports (once built)
