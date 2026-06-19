@@ -292,3 +292,153 @@ Code Node (excel-generator.js) builds .xlsx
 - [ ] Build Chat Agent workflow in n8n first
 - [ ] Test with sample Yardi files
 - [ ] Build Forecast workflow second
+
+
+---
+
+## Tool 4 — Read Yardi Files: FINAL Working Architecture (v2.4)
+
+**Status: ✅ Production-tested for prop01 (found) and prop02 (not found)**
+
+### Final Node Structure
+
+[When Executed by Another Workflow]
+        ↓
+[Search files and folders]   (Always Output Data: ON)
+        ↓
+[Match File]                  (Code node, Always Output Data: ON)
+        ↓
+[IF: found === true]
+   ↙ true                  ↘ false
+[Download file]      [Not Found Message]  (Code node, final node)
+   ↓
+[Extract from File]   (Always Output Data: ON)
+   ↓
+[Code in JavaScript]   (formats success output)
+
+### Trigger Input Schema (case-sensitive!)
+Field names as defined in "When Executed by Another Workflow":
+  PropertyCode  (String)
+  FileType      (String)
+
+IMPORTANT: n8n expressions are case-sensitive. All downstream
+references MUST use the exact casing: $json.PropertyCode, not
+$json.propertyCode. This caused a multi-hour outage when the
+Search node's query still referenced the lowercase version
+after the dynamic expression was reinstated.
+
+### Search files and folders config
+  Search Query: {{ $json.PropertyCode }}
+  Filter: Folder = yardi-input
+  Always Output Data: ON
+
+### Match File (Code node) — replaces old "Filter" node
+```javascript
+const triggerData = $('When Executed by Another Workflow').first().json;
+const fileType = triggerData.FileType;
+const propertyCode = triggerData.PropertyCode;
+
+const items = $input.all();
+
+const patternMap = {
+  actuals: 'actualbudget',
+  budget: 'monthbudget',
+  rent_roll: 'rentroll'
+};
+const pattern = patternMap[fileType] || fileType;
+
+const match = items.find(item => {
+  const name = (item.json.name || '').toLowerCase().replace(/_/g, '');
+  return item.json.id && name.includes(pattern);
+});
+
+if (match) {
+  return [{ json: { found: true, id: match.json.id, name: match.json.name, propertyCode, fileType } }];
+}
+return [{ json: { found: false, propertyCode, fileType } }];
+```
+
+### IF node
+  Condition: {{ $json.found }}  is true  (Boolean)
+
+### Not Found Message (Code node, FALSE branch, final node)
+```javascript
+const j = $input.first().json;
+return [{
+  json: {
+    output: JSON.stringify({
+      success: false,
+      message: `No ${j.fileType} file found for property ${j.propertyCode}. Please confirm the file has been uploaded to /yardi-input/ with the correct naming convention.`
+    })
+  }
+}];
+```
+
+### Code in JavaScript (TRUE branch, after Extract from File)
+```javascript
+const items = $input.all();
+
+if (!items || items.length === 0 || !items[0].json || Object.keys(items[0].json).length === 0) {
+  const propertyCode = $('When Executed by Another Workflow').first().json.PropertyCode;
+  const fileType = $('When Executed by Another Workflow').first().json.FileType;
+  return [{
+    json: {
+      output: JSON.stringify({
+        success: false,
+        message: `No ${fileType} file found for property ${propertyCode}.`
+      })
+    }
+  }];
+}
+
+const fileType = $('When Executed by Another Workflow').first().json.FileType || 'actuals';
+const rows = items.map(item => item.json);
+
+const keyGLCodes = ['41100','41110','41200','41990','42100','42990',
+  '43100','43290','43510','44100','44990','45990',
+  '61050','62000','63000','64000','65000','66000','69990'];
+
+let outputRows;
+if (fileType === 'actuals' || fileType === 'budget') {
+  const filtered = rows.filter(row => {
+    const gl = String(Object.values(row)[0] || '').trim();
+    return keyGLCodes.includes(gl) || gl.endsWith('990') || gl.endsWith('000');
+  });
+  outputRows = filtered.length > 0 ? filtered : rows.slice(0, 100);
+} else {
+  outputRows = rows.slice(0, 200);
+}
+
+return [{
+  json: {
+    output: JSON.stringify({ success: true, fileType, rowCount: outputRows.length, data: outputRows })
+  }
+}];
+```
+
+### Key Lessons Learned (read before modifying this workflow)
+
+1. **n8n field names are case-sensitive.** Always match the exact
+   casing defined in the trigger's Workflow Input Schema.
+2. **ToolWorkflow v2 requires the final node to return a field
+   literally named `output`, as a STRING** (use JSON.stringify).
+   Returning a raw JSON object causes "workflow did not return
+   a response" errors.
+3. **"Always Output Data" must be enabled on every node in the
+   chain** (Search, Match File, Download, Extract, Code) to
+   prevent the workflow from silently halting when zero items
+   are found upstream — without it, n8n stops execution and
+   returns nothing rather than a graceful error.
+4. **Large P&L files exceed LLM context limits.** The full GL
+   detail file is ~217K tokens — over Claude's 200K limit. The
+   Code node filters to only key GL codes and subtotal rows
+   (ending in 990/000) before returning data to Bessie.
+5. **The old "Filter" node approach was abandoned** in favour of
+   an explicit Code node (Match File) + IF node branch, because
+   Filter node's "Kept: 0 items" behaviour didn't propagate
+   useful data downstream for the false case.
+
+
+
+
+
