@@ -1,0 +1,228 @@
+# Tool 6 — Compute Financials + Generate Excel: Architecture (v4 Merged)
+
+**Status:** ✅ Production
+**Supersedes:** the original 3-tool design (Tool 4 → Tool 6 → Tool 5, agent
+relays data between each). See `CLAUDE.md` → "Major Architecture Pivot" for why.
+
+---
+
+## Why This Is One Sub-Workflow, Not Three Tools
+
+LLM agents cannot reliably relay large JSON payloads through tool-call
+arguments. This broke twice in production: once passing raw Tool 4 file
+outputs into Tool 6, once passing Tool 6's `forecastData` output into Tool 5.
+Both times the agent silently dropped or truncated the parameter.
+
+**Fix:** Tool 6 reads its own files, computes the forecast, generates the
+Excel workbook, and uploads it — all inside one sub-workflow execution. The
+agent only ever sends three short strings in, and receives a small summary
+object back. The large `forecastData` object never leaves this sub-workflow.
+
+---
+
+## Trigger Schema
+
+```
+propertyCode  (String)  — e.g. "prop01"
+period        (String)  — e.g. "2026-Q3"
+fiscalYear    (String)  — e.g. "FY2026"
+```
+
+---
+
+## Node Map
+
+```
+[When Executed by Another Workflow]
+        ↓ (4 parallel branches)
+   ┌────┴─────┬──────────┬───────────┐
+[Search    [Search    [Search    [Search
+ actuals]   actuals_py] budget]   rent_roll]
+   ↓           ↓          ↓          ↓
+[Match     [Match     [Match     [Match
+ File]      File]      File]      File]
+   ↓           ↓          ↓          ↓
+  [IF]       [IF]       [IF]       [IF]
+ true/false  true/false true/false true/false
+   ↓    ↓      ↓    ↓     ↓    ↓     ↓    ↓
+[Down-  [Code: [Down-  [Code: [Down-  [Code: [Down-  [Code:
+ load]  not-    load]  not-    load]  not-    load]  not-
+        found]         found]         found]         found]
+   ↓                ↓               ↓               ↓
+[Extract           [Extract        [Extract        [Extract
+ from File]         from File]      from File]      from File]
+   ↓                ↓               ↓               ↓
+[Code: v3.3        [Code: v3.3     [Code: v3.3     [Code: v3.3
+ formatter,         formatter,      formatter,      formatter,
+ fileType=          fileType=       fileType=       fileType=
+ 'actuals'          'actuals_py'    'budget'        'rent_roll'
+ hardcoded]         hardcoded]      hardcoded]      hardcoded]
+   ↓                ↓               ↓               ↓
+[Set: tag           [Set: tag       [Set: tag       [Set: tag
+ fileType]          fileType]       fileType]       fileType]
+   └────────┬────────┴───────┬───────┴───────┬───────┘
+            ↓ (8 inputs: 4 true-branch + 4 false-branch)
+        [Merge — Append mode]
+            ↓
+    [Code: Compute Financials v4]
+            ↓
+    [Code: Generate Excel Workbook]
+            ↓
+    [Google Drive — Upload file]
+            ↓
+    [Code: Format Output]  ← final node, returns to agent
+```
+
+---
+
+## Branch Detail (×4 — actuals, actuals_py, budget, rent_roll)
+
+Each of the 4 branches is a direct copy of Tool 4's internal node chain, with
+two changes required because Tool 6's trigger has no `FileType` field:
+
+**Match File node** — `fileType` is hardcoded per branch (was previously read
+from `triggerData.FileType`). `propertyCode` still reads dynamically from
+`triggerData.propertyCode` (note: lowercase `p`, matching Tool 6's schema —
+differs from Tool 4's `PropertyCode`).
+
+**v3.3 formatter node (the final Code node in each branch)** — same two
+hardcode points: `fileType` is a literal string per branch; `propertyCode`
+reads from `$('When Executed by Another Workflow').first().json.propertyCode`.
+Everything else (period detection via header scan / Period-row parsing /
+date-arithmetic fallback, GL filtering, row-key normalization) is unchanged
+from Tool 4 v3.3 — see `code/formatter-actuals.js`, `formatter-actuals_py.js`,
+`formatter-budget.js`, `formatter-rent_roll.js` for the four hardcoded
+variants.
+
+**Set node (after Extract)** — tags the item with `fileType` so the Merge
+node's combined output can be sorted by branch. Always Output Data: ON.
+
+**Code node on the IF false branch** — returns a placeholder so the Merge
+node always receives exactly 8 items regardless of which files were found:
+```javascript
+return [{ json: { fileType: '<branch-name>', output: JSON.stringify({ success: false, message: 'File not found' }) } }];
+```
+
+**Row cap:** raised from Tool 4's original 40 to 200 (see `CLAUDE.md` →
+"Critical Bugs Fixed" for why the original cap was actively breaking
+forecasts in this architecture).
+
+---
+
+## Merge Node
+
+Mode: **Append**. 8 inputs (4 true-branch Set nodes + 4 false-branch Code
+nodes). Always Output Data: ON.
+
+---
+
+## Code: Compute Financials v4
+
+Reads `$input.all()` from the Merge node, sorts items by `fileType`, parses
+each branch's `output` JSON string, and builds the internal `forecastData`
+object: `actuals[]`, `baseline[]`, `upside[]`, `downside[]`, `variance[]`,
+`assumptions[]`, `pyActuals[]`, `rentRoll{}`, `keyFindings{}`,
+`dataQuality{}`.
+
+**Key Findings totals use anchor GL codes** (`45990` TOTAL REVENUES, `90000`
+TOTAL OPERATING EXPENSES, `90010` NET OPERATING PROFIT) rather than summing
+every row tagged with a category — see `CLAUDE.md` → "Critical Bugs Fixed" #2
+for why category-summation double-counts subtotal/grand-total rows. Falls
+back to category-summation only if an anchor GL is missing, and flags this in
+`dataQuality.warningFlags`.
+
+GL category scenario adjustments (Baseline/Upside/Downside %) are applied per
+the same table documented in `system-prompt.md` (historical v2/v3 prompt
+versions) — `41100` Rent Revenue, `41110` Vacancy, `41200` Free Rent,
+`42100`/`42210` Parking, `43100` Storage, `43510` Laundry, `69990` Labor,
+`75990` Admin, `87990` R&M, `89190` Utilities, `89290` Realty Tax (fixed,
+0% all scenarios), `89390` Mgmt Fee (0%, self-adjusting with revenue).
+
+Output: `{ json: { output: JSON.stringify(forecastData) } }`.
+
+---
+
+## Code: Generate Excel Workbook
+
+Reads the prior node's output directly (`$('Compute Financials v4').first().json`)
+— **not** from agent input, eliminating the large-blob-passing failure mode.
+
+**Template-population approach** (not from-scratch generation): downloads the
+production template file from Google Drive, finds each GL's row by scanning
+column A (template is GL-code-keyed, not row-position-dependent per its own
+documented design), and writes only the data cells — actuals, forecast
+values, variance, rationale, assumptions percentages. Formulas, the scenario
+dropdown, and conditional formatting in the template are intended to remain
+untouched.
+
+**Known limitation (accepted, not yet resolved):** SheetJS (`xlsx`) cannot
+write conditional formatting or data validation on a load-modify-save round
+trip. The scenario dropdown (Forecast!L5:N5) and yellow override-cell
+highlighting (Overrides tab) will not be present in generated output, even
+though they exist in the template. See `CLAUDE.md` → "exceljs Investigation"
+for why exceljs isn't a viable fix today (n8n 2.28.3's task runner
+architecture doesn't expose `NODE_PATH`-installed packages to Code nodes),
+and the note on why this limitation does not carry over to a future Power
+Automate migration.
+
+Output: `{ json: { fileName, property, period, tabs }, binary: { data: {...} } }`.
+
+---
+
+## Google Drive — Upload File
+
+Uploads the binary `.xlsx` to `/yardi-output/`. Always Output Data: ON.
+
+---
+
+## Code: Format Output (final node)
+
+Returns only a small summary — never the raw `forecastData`:
+
+```javascript
+const upload = $input.first().json;
+const genNode = $('Generate Excel Workbook').first().json;
+const computeNode = $('Compute Financials v4').first().json;
+let keyFindings = null;
+try { keyFindings = JSON.parse(computeNode.output).keyFindings; } catch(e) {}
+
+return [{ json: { output: JSON.stringify({
+  success: true,
+  fileName: genNode.fileName,
+  property: genNode.property,
+  period: genNode.period,
+  driveFileId: upload.id || null,
+  driveLink: upload.webViewLink || upload.webContentLink || null,
+  tabs: genNode.tabs,
+  keyFindings: keyFindings
+}) } }];
+```
+
+---
+
+## AI Agent Tool Registration
+
+**Tool description** (paste into the AI Agent node's Tool 6 entry):
+
+> Compute the full forecast and read all source files internally. Call ONCE
+> per forecast — do not call Tool 4 first. Parameters: propertyCode (string,
+> e.g. "prop01"), period (string, e.g. "2026-Q3"), fiscalYear (string, e.g.
+> "FY2026"). Returns a small summary object (fileName, driveLink, tabs,
+> keyFindings) — the full forecastData JSON stays internal to this tool and
+> is never passed back through the agent. Do NOT call Calculator. Do NOT call
+> Tool 4 or a separate "Generate Excel" tool — there is no separate
+> Excel-generation step.
+
+**Input fields:** `propertyCode`, `period`, `fiscalYear` — all set to **From
+AI** with per-field descriptions (not static Mapping values), so the agent
+fills them dynamically from the conversation.
+
+---
+
+## Expected Performance
+
+| Metric | Value |
+|---|---|
+| Agent iterations per forecast | 2–3 |
+| Tool 6 internal execution time | ~10–30s (4 parallel Drive reads + compute + Excel write + upload) |
+| Estimated cost per run | well under $1 (agent only handles 1 tool call + final response) |
