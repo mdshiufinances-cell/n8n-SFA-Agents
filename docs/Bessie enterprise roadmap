@@ -1,0 +1,842 @@
+# Bessie Enterprise AI FP&A — Security, RAG & QA Roadmap
+
+**Version:** 1.0
+**Date:** 2026-07-01
+**Owner:** Bessie Project — FP&A AI Team
+**Status:** Draft / Implementation Blueprint
+
+---
+
+## Executive Summary
+
+This roadmap transforms Bessie from a functional forecasting agent into a **production-grade enterprise FP&A AI system** with three interconnected enhancements:
+
+| Phase | Initiative | Priority | Estimated Effort |
+|---|---|---|---|
+| 1 | Security & Governance Guardrails | 🔴 Immediate | 2–3 weeks |
+| 2 | RAG Knowledge Pipeline | 🟡 High | 4–6 weeks |
+| 3 | QA Review Agent | 🟡 High | 3–4 weeks |
+
+**Guiding principle across all phases:** AI explains and interprets — deterministic code calculates. Bessie should never be trusted to perform arithmetic; she should only reason about numbers computed by verified code.
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         BESSIE ENTERPRISE ARCHITECTURE                       │
+│                                                                               │
+│  ┌──────────┐   ┌──────────────────────────────────────────────────────┐    │
+│  │ Telegram │   │                    n8n Orchestration                  │    │
+│  │ (Auth'd) │──▶│                                                       │    │
+│  └──────────┘   │  ┌─────────────┐    ┌─────────────────────────────┐  │    │
+│                 │  │  PHASE 1    │    │         PHASE 2              │  │    │
+│  ┌──────────┐   │  │  Governance │    │         RAG Pipeline          │  │    │
+│  │ n8n Chat │──▶│  │  Guardrails │    │  ┌─────────────────────────┐ │  │    │
+│  └──────────┘   │  │             │    │  │   Google Drive          │ │  │    │
+│                 │  │ • User auth │    │  │   Knowledge Base        │ │  │    │
+│                 │  │ • Input val │    │  │   (SOPs, Policies, etc) │ │  │    │
+│                 │  │ • Schema val│    │  └──────────┬──────────────┘ │  │    │
+│                 │  │ • Audit log │    │             │ Ingest         │  │    │
+│                 │  │ • Secrets   │    │  ┌──────────▼──────────────┐ │  │    │
+│                 │  └──────┬──────┘    │  │   Qdrant Vector DB     │ │  │    │
+│                 │         │           │  │   (Embeddings + Meta)   │ │  │    │
+│                 │         ▼           │  └──────────┬──────────────┘ │  │    │
+│                 │  ┌─────────────┐    │             │ Retrieve        │  │    │
+│                 │  │  Tool 6     │    └─────────────┼─────────────────┘  │    │
+│                 │  │  (Compute + │◀────────────────┘                     │    │
+│                 │  │   Excel)    │    RAG context injected                │    │
+│                 │  └──────┬──────┘    into system prompt                 │    │
+│                 │         │                                               │    │
+│                 │         ▼           ┌─────────────────────────────┐    │    │
+│                 │  ┌─────────────┐    │         PHASE 3              │    │    │
+│                 │  │  REVIEW     │    │         QA Review Agent      │    │    │
+│                 │  │  AGENT      │◀───│  • Math reconciliation       │    │    │
+│                 │  │  (Tool 7)   │    │  • Period integrity checks   │    │    │
+│                 │  └──────┬──────┘    │  • Commentary validation     │    │    │
+│                 │         │           │  • Confidence scoring        │    │    │
+│                 │         │ Pass      │  • Feedback loop             │    │    │
+│                 │         ▼           └─────────────────────────────┘    │    │
+│                 │  ┌─────────────┐                                        │    │
+│                 │  │  Deliver    │    Fail → Retry (max 2) → Escalate     │    │
+│                 │  │  to User    │                                        │    │
+│                 │  └─────────────┘                                        │    │
+│                 └──────────────────────────────────────────────────────┘    │
+│                                                                               │
+│  ┌───────────────────────────────────────────────────────────────────────┐   │
+│  │  SHARED INFRASTRUCTURE                                                 │   │
+│  │  Yardi Voyager → Google Drive (OAuth2) → n8n 2.28.3 → Claude Sonnet   │   │
+│  │  Audit Log (Google Sheets) | Secrets (env vars) | GitHub (docs/code)  │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+# PHASE 1 — Security & Governance Guardrails
+
+## 1.1 Objective
+
+Ensure every Bessie output is traceable to approved source data, every calculation is performed by deterministic code (never the LLM), and every interaction is logged. Build the minimum governance layer required before Bessie's output can be trusted in a production context.
+
+## 1.2 Governance Framework
+
+### Principle 1 — AI Explains, Code Calculates
+
+**The single most important rule.** Claude should never compute a financial figure — it should only interpret figures that Tool 6 (deterministic code) has already computed.
+
+| Do | Don't |
+|---|---|
+| "GL 90010 shows NOI of $6.15M (from Yardi actuals Jul–Mar)" | "I estimate NOI is approximately $6M" |
+| "Baseline forecast uses trailing 3-month average per methodology" | "I think revenue will be around $1.1M/month" |
+| "Vacancy improved 10% vs trailing avg per system prompt rule" | "Vacancy looks about 10% better than usual" |
+
+**Enforcement mechanism:** The system prompt explicitly prohibits Bessie from performing math or estimating quantities not present in Tool 6's `keyFindings` output. The QA Review Agent (Phase 3) checks for unsupported numeric claims.
+
+### Principle 2 — Source Attribution on Every Number
+
+Every figure in Bessie's response must be traceable to one of:
+- A GL code in a Yardi actuals file
+- A computed field in `keyFindings` from Tool 6
+- A rule in the RAG knowledge base (Phase 2)
+- A documented assumption in the system prompt
+
+Figures without clear attribution are flagged as a QA failure in Phase 3.
+
+### Principle 3 — Deterministic First, AI Second
+
+The processing chain enforces this order:
+1. Tool 6 runs deterministic code (no LLM involved)
+2. Review Agent runs deterministic validation checks (no LLM)
+3. LLM commentary is generated ONLY after Steps 1 and 2 pass
+4. LLM receives pre-validated numbers — it cannot alter them
+
+## 1.3 Implementation Components
+
+### A. Telegram User ID Whitelist (Highest Priority)
+
+Currently Bessie has no authentication. Any Telegram user who knows the chat URL can invoke it.
+
+**Implementation:**
+- In the Chat Trigger node (or an early Code node), check the incoming user ID against an approved list
+- Store the whitelist in an n8n environment variable or a Google Sheet (Google Sheet preferred — allows non-developer updates)
+
+```javascript
+// Code node: Authenticate User (runs before AI Agent)
+const ALLOWED_USERS = (process.env.BESSIE_ALLOWED_USERS || '').split(',').map(s => s.trim());
+const userId = $input.first().json.userId || $input.first().json.chatId || '';
+
+if (ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(String(userId))) {
+  return [{ json: {
+    blocked: true,
+    message: `Access denied. User ID ${userId} is not authorized. Contact your system administrator.`
+  }}];
+}
+return [{ json: { blocked: false, userId } }];
+```
+
+- Add an IF node after this: if `blocked === true`, return the denial message without passing to AI Agent
+- Add authorized user IDs to `BESSIE_ALLOWED_USERS` env var (comma-separated) in Hostinger Docker Manager
+
+### B. Input Sanitization
+
+Prevent prompt injection and malformed requests before they reach the LLM.
+
+```javascript
+// Code node: Sanitize Input
+const raw = $input.first().json.chatInput || '';
+
+const issues = [];
+
+// Block prompt injection patterns
+const injectionPatterns = [
+  /ignore (previous|all|above) instructions/i,
+  /system prompt/i,
+  /you are now/i,
+  /pretend (you are|to be)/i,
+  /jailbreak/i,
+  /DAN mode/i,
+];
+for (const p of injectionPatterns) {
+  if (p.test(raw)) issues.push('Potential prompt injection detected');
+}
+
+// Block excessively long inputs (>2000 chars is unusual for a forecast request)
+if (raw.length > 2000) issues.push('Input exceeds 2000 character limit');
+
+if (issues.length > 0) {
+  return [{ json: {
+    blocked: true,
+    message: `Your request could not be processed: ${issues.join('; ')}. Please rephrase and try again.`
+  }}];
+}
+return [{ json: { blocked: false, sanitizedInput: raw.trim() } }];
+```
+
+### C. Tool 6 Output Schema Validation
+
+Before Bessie receives Tool 6's output and writes a response, validate the schema to catch corrupt or incomplete computation results.
+
+```javascript
+// Code node: Validate Tool 6 Output (runs inside Tool 6 Format Output, or as a separate pre-delivery check)
+const result = JSON.parse($input.first().json.output || '{}');
+
+const errors = [];
+
+if (!result.success) errors.push('Tool 6 reported failure: ' + (result.message || 'unknown'));
+if (!result.keyFindings) errors.push('Missing keyFindings');
+if (result.keyFindings) {
+  if (typeof result.keyFindings.ytdRevenue !== 'number') errors.push('ytdRevenue is not a number');
+  if (typeof result.keyFindings.ytdNOI !== 'number') errors.push('ytdNOI is not a number');
+  if (result.keyFindings.ytdNOIMargin < -1 || result.keyFindings.ytdNOIMargin > 1)
+    errors.push(`NOI margin ${result.keyFindings.ytdNOIMargin} is outside plausible range [-1, 1]`);
+  if (!result.keyFindings.fullYearRevenueBaseline)
+    errors.push('Missing fullYearRevenueBaseline');
+}
+if (!result.fileName) errors.push('Missing fileName');
+if (!result.driveLink) errors.push('Missing driveLink');
+
+if (errors.length > 0) {
+  return [{ json: {
+    valid: false,
+    errors,
+    message: `Forecast output failed validation: ${errors.join('; ')}`
+  }}];
+}
+return [{ json: { valid: true, ...result } }];
+```
+
+### D. Audit Logging
+
+Every forecast run must produce an immutable audit log entry.
+
+**Storage:** Google Sheet (`Bessie_Audit_Log`) — accessible to non-developers, easy to query.
+
+**Log schema:**
+
+| Column | Description |
+|---|---|
+| `run_id` | UUID — unique per forecast execution |
+| `timestamp` | ISO 8601 |
+| `user_id` | Telegram/chat user identifier |
+| `property_code` | e.g. prop01 |
+| `period` | e.g. 2026-Q4 |
+| `fiscal_year` | e.g. FY2026 |
+| `actuals_months_available` | Number of actual months read from file |
+| `files_found` | Comma-separated: actuals, budget, actuals_py, rent_roll |
+| `schema_valid` | true/false |
+| `qa_result` | PASS / FAIL / ESCALATED (Phase 3) |
+| `qa_issues` | Pipe-separated list of QA failures if any |
+| `confidence_score` | 0.0–1.0 (Phase 3) |
+| `output_file` | Drive link to generated workbook |
+| `tokens_used` | Approximate Claude token consumption |
+| `error_message` | If run failed |
+| `run_duration_s` | Total execution time in seconds |
+
+**n8n implementation:** Add a Google Sheets "Append Row" node as the final step in Tool 6's Format Output chain, writing one row per run. This runs regardless of success or failure (use "Always Output Data" + "On Error: Continue").
+
+### E. Secrets Management
+
+Current state: API keys and credentials stored in n8n's credential store and Docker env vars.
+
+**Best practices for the current stack:**
+
+| Secret | Current location | Recommendation |
+|---|---|---|
+| Anthropic API key | n8n credential store | ✅ Keep as-is — n8n encrypts at rest |
+| Google Drive OAuth2 | n8n credential store | ✅ Keep as-is |
+| SerpAPI key | n8n credential store | ✅ Keep as-is |
+| Allowed user IDs | Not yet implemented | Add as `BESSIE_ALLOWED_USERS` Docker env var |
+| Qdrant API key (Phase 2) | TBD | Add as Docker env var, reference as `process.env.QDRANT_API_KEY` |
+
+**Rules:**
+- Never hardcode API keys in Code nodes — always use `process.env.VAR_NAME`
+- Rotate the Google Drive OAuth token immediately if a "universal not-found" error occurs across all branches simultaneously (known expiry symptom)
+- Add `N8N_ENCRYPTION_KEY` to Docker env if not already set — this encrypts stored credentials at rest
+
+### F. Prompt Hardening (System Prompt v7 additions)
+
+Add these sections to the system prompt immediately after the current rules:
+
+```
+## ANTI-HALLUCINATION RULES — NON-NEGOTIABLE
+
+1. NEVER invent a dollar amount. Every number in your response must come from Tool 6's keyFindings output or a Yardi GL row. If a number isn't in Tool 6's output, say "data not available" — never estimate.
+
+2. NEVER compute arithmetic. If you need a sum, ratio, or comparison not already in keyFindings, say "this calculation is not available in this run" rather than computing it yourself.
+
+3. NEVER reference a property, GL code, or account name not returned by Tool 6. Do not complete or guess names — use only what Tool 6 returned.
+
+4. ALWAYS cite sources. Every claim must end with a source tag:
+   - [Yardi actuals GL XXXXX]
+   - [Tool 6 keyFindings]
+   - [RAG: document name, section] (Phase 2)
+   - [System assumption: rule name]
+
+5. IF Tool 6 reports a data quality warning (dataQuality.warningFlags), disclose this to the user BEFORE presenting results.
+
+6. IF you are uncertain about a figure, say so explicitly. "I cannot confirm this from the available data" is always the right answer when in doubt.
+```
+
+### G. Version Control & Change Management
+
+| Artifact | Version control approach |
+|---|---|
+| System prompts | GitHub `/docs/system-prompt.md` — all changes via PR |
+| Code nodes | GitHub `/code/*.js` — versioned, committed after each tested change |
+| n8n workflows | Export JSON after each stable release → GitHub `/workflows/` |
+| RAG documents (Phase 2) | Google Drive with version suffix (e.g. `v1`, `v2`) in filename |
+| Audit logs | Google Sheets — append-only, never delete rows |
+
+---
+
+# PHASE 2 — RAG Knowledge Pipeline
+
+## 2.1 Objective
+
+Give Bessie access to your organization's institutional knowledge — forecasting SOPs, GL-specific guidance, accounting policies, historical commentary — without bloating the system prompt or requiring code changes when knowledge is updated. Business users should be able to update knowledge by editing a Google Doc, with changes flowing automatically into Bessie's reasoning.
+
+## 2.2 Why RAG Reduces Hallucinations
+
+Without RAG, when Bessie encounters a question requiring business context (e.g. "why does GL 41200 Free Rent spike in Q1?"), she has two bad options: make something up, or say she doesn't know. With RAG, she retrieves the organization's actual explanation from your documented knowledge base and cites it. This is the most impactful single change for reducing hallucinations on domain-specific questions.
+
+## 2.3 Architecture Decision: What RAG Covers
+
+RAG handles **business knowledge and reasoning context**. It does NOT handle financial data (that stays in Yardi/Google Drive). This separation is critical:
+
+| Layer | Managed by | RAG? |
+|---|---|---|
+| Raw financial data (actuals, budgets) | Yardi → Google Drive → Tool 6 | ❌ No |
+| Calculated results (NOI, variances) | Tool 6 deterministic code | ❌ No |
+| Business rules (how to forecast GL X) | RAG knowledge base | ✅ Yes |
+| FP&A methodology (trailing avg logic) | RAG knowledge base | ✅ Yes |
+| Historical commentary ("Q2 spike was due to...") | RAG knowledge base | ✅ Yes |
+| Market benchmarks (CMHC) | HTTP Request Tool + RAG | ✅ Partial |
+
+## 2.4 Knowledge Architecture
+
+### Folder Structure (Google Drive)
+
+```
+Bessie Knowledge Base/
+  ├── 01_Forecasting/
+  │     ├── Forecast_Methodology_v1.md
+  │     ├── Forecast_Business_Rules_v1.md
+  │     ├── GL_Forecasting_Guide_v1.md          ← per-GL instructions
+  │     └── Trailing_Average_Logic_v1.md
+  ├── 02_Budgeting/
+  │     ├── Budget_Assumptions_FY2026_v1.md
+  │     ├── Budget_Methodology_v1.md
+  │     └── Budget_Review_Process_v1.md
+  ├── 03_Accounting_Policies/
+  │     ├── Revenue_Recognition_Policy_v1.md
+  │     ├── Accrual_Policy_v1.md
+  │     └── Capitalization_Policy_v1.md
+  ├── 04_KPIs_and_Metrics/
+  │     ├── KPI_Definitions_v1.md
+  │     ├── Materiality_Thresholds_v1.md
+  │     └── NOI_Calculation_Standard_v1.md
+  ├── 05_Property_Management/
+  │     ├── Property_Management_Glossary_v1.md
+  │     ├── Yardi_GL_Chart_of_Accounts_v1.md
+  │     └── Lease_Charge_Codes_v1.md
+  ├── 06_Variance_Analysis/
+  │     ├── Variance_Analysis_Methodology_v1.md
+  │     ├── Commentary_Style_Guide_v1.md
+  │     └── Materiality_Decision_Framework_v1.md
+  ├── 07_Historical_Commentary/
+  │     ├── FY2025_Q4_Commentary_prop01.md
+  │     └── [property]_[period]_Commentary.md    ← one per period
+  ├── 08_Approval_Workflows/
+  │     ├── Forecast_Approval_Process_v1.md
+  │     └── Budget_Sign_Off_Matrix_v1.md
+  └── 09_Lessons_Learned/
+        ├── Bessie_Decision_Log.md
+        └── Bessie_Lessons_Learned.md
+```
+
+### Metadata Standards
+
+Every document must have a YAML frontmatter block:
+
+```yaml
+---
+document_type: forecasting_methodology   # see taxonomy below
+version: 1
+status: active                           # active | draft | deprecated
+owner: FP&A Team
+last_reviewed: 2026-07-01
+applicable_properties: all              # or: prop01, prop02
+applicable_gl_codes: 41100, 41110       # or: all
+fiscal_year: FY2026                     # or: all
+tags: [rent_revenue, vacancy, forecasting]
+---
+```
+
+**Document type taxonomy:**
+`forecasting_methodology | budgeting_methodology | accounting_policy | kpi_definition | gl_guidance | materiality | commentary_template | approval_workflow | property_procedure | historical_commentary | lessons_learned`
+
+### Versioning Strategy
+
+- Files named with `_v1`, `_v2` etc.
+- When a document is superseded, update `status: deprecated` in the old version and create a new version
+- Never delete — the ingestion pipeline filters out `status: deprecated` automatically
+- Quarterly review cycle: each document reviewed, version bumped if updated
+
+## 2.5 Technical Architecture
+
+### Infrastructure Required
+
+| Component | Recommendation | Rationale |
+|---|---|---|
+| Vector database | **Qdrant Cloud** (managed, free tier) | Avoids self-hosting complexity; n8n has native integration; free tier is sufficient for < 1M vectors |
+| Embedding model | **OpenAI `text-embedding-3-small`** | Cost-effective ($0.02/1M tokens), high quality, well-supported in n8n |
+| Document store | Google Drive (existing) | No new storage infrastructure; business users already know it |
+| Ingestion trigger | n8n scheduled workflow (daily) | Simple; catches all new/updated docs overnight |
+
+### Qdrant Collection Design
+
+One collection: `bessie_knowledge`
+
+```json
+{
+  "collection_name": "bessie_knowledge",
+  "vectors": {
+    "size": 1536,
+    "distance": "Cosine"
+  },
+  "payload_schema": {
+    "document_type": "keyword",
+    "applicable_properties": "keyword",
+    "applicable_gl_codes": "keyword",
+    "fiscal_year": "keyword",
+    "status": "keyword",
+    "version": "integer",
+    "source_file": "text",
+    "chunk_index": "integer",
+    "last_reviewed": "keyword"
+  }
+}
+```
+
+### Chunking Strategy
+
+**Rule: one concept per chunk.** The goal is for each retrieved chunk to answer a specific question, not to return half a document.
+
+| Document type | Chunking approach | Chunk size | Overlap |
+|---|---|---|---|
+| SOPs / Methodology | By section heading (`##`) | ~500 tokens | 50 tokens |
+| GL Forecasting Guide | One chunk per GL code block | ~300 tokens | 0 (each GL is self-contained) |
+| Policy documents | By paragraph | ~300 tokens | 75 tokens |
+| Historical commentary | One chunk per period per property | ~400 tokens | 0 |
+| KPI definitions | One chunk per KPI | ~200 tokens | 0 |
+
+**Never chunk across section boundaries.** A chunk that starts mid-explanation and ends mid-context is useless for retrieval.
+
+### Ingestion Pipeline (n8n Workflow: "Bessie RAG Ingestor")
+
+```
+[Schedule Trigger — daily 2am]
+        ↓
+[Google Drive — List files in Knowledge Base folder recursively]
+        ↓
+[Code: Filter — only .md and .txt files, status != deprecated, modified since last run]
+        ↓
+[Loop over files]
+        ↓
+[Google Drive — Download file]
+        ↓
+[Code: Parse frontmatter + chunk document]
+        ↓
+[OpenAI Embeddings — embed each chunk]   (model: text-embedding-3-small)
+        ↓
+[Code: Build Qdrant upsert payload — chunk text + embedding + metadata]
+        ↓
+[HTTP Request — Qdrant upsert]   (DELETE old chunks for this file first, then INSERT new)
+        ↓
+[Google Sheets — Log ingestion run]   (file name, chunks created, timestamp)
+```
+
+Key implementation notes:
+- Store the last successful ingestion timestamp in a Google Sheet or n8n variable; only re-ingest files modified since that timestamp
+- On re-ingest: delete all existing Qdrant points for that file (filter by `source_file` metadata), then insert fresh chunks. This prevents stale/duplicate knowledge.
+- Chunk IDs: use `{file_name}_{chunk_index}` for deterministic deduplication
+
+### Retrieval Strategy
+
+**Hybrid retrieval (recommended):** Combine semantic (vector) search with metadata filtering for precision.
+
+When a forecast request comes in for `prop01`, the retrieval query should filter by:
+- `applicable_properties IN [prop01, all]`
+- `status = active`
+- Optional: `applicable_gl_codes` if the query mentions specific GLs
+- Optional: `fiscal_year IN [FY2026, all]`
+
+This ensures Bessie doesn't retrieve general guidance when property-specific guidance exists.
+
+**Top-K:** Retrieve top 5 chunks per query (3 for general methodology, 2 for property/GL-specific). More than 5 chunks risks context bloat and distraction; fewer than 3 risks missing relevant guidance.
+
+### RAG Integration with Bessie's Reasoning
+
+RAG context is injected into the AI Agent's system prompt **dynamically at request time**. The retrieval happens in a pre-processing step before the AI Agent node:
+
+```
+[Chat Trigger]
+        ↓
+[Code: Extract query intent — property, period, GL codes mentioned]
+        ↓
+[HTTP Request — Qdrant search with metadata filters]
+        ↓
+[Code: Format retrieved chunks as context block]
+        ↓
+[Set node: inject context into system prompt expression]
+        ↓
+[AI Agent — system message now includes retrieved context]
+```
+
+The injected context block looks like:
+
+```
+## Retrieved Knowledge Context (from organizational knowledge base)
+
+### [GL 41110 Vacancy — Forecasting Guidance]
+Source: GL_Forecasting_Guide_v1.md, Section 2.3
+---
+Vacancy (GL 41110) is forecasted using a -10% adjustment to the trailing
+3-month average in the Baseline scenario. This reflects the seasonal
+improvement pattern observed in Toronto multifamily markets from Apr–Jun.
+The Upside scenario assumes -27% (near-full occupancy target of 96.5%).
+The Downside scenario assumes +27% (reflects risk of above-market vacancy
+if 1–2 units come off-lease without immediate re-let)...
+
+### [Commentary Style Guide — Variance Explanation Standards]
+Source: Commentary_Style_Guide_v1.md, Section 1
+---
+All material variances (>5% or >$10,000) must be explained with:
+1. The root cause (not a restatement of the number)
+2. Whether the variance is expected to continue in forecast months
+3. Any management action taken or planned...
+```
+
+This means:
+- Bessie's commentary will reference real documented methodologies
+- If a methodology changes (e.g. vacancy assumption updated to -15%), update one document in Drive — no prompt changes needed
+- Every RAG-sourced claim can be traced to its source document
+
+### Token Budget for RAG Context
+
+The RAG context injection must be managed to stay within the 4,000 max_tokens budget:
+
+| Component | Estimated tokens |
+|---|---|
+| System prompt (v6 with governance rules) | ~600 |
+| RAG context (5 chunks × ~150 tokens avg) | ~750 |
+| Tool 6 keyFindings output | ~800 |
+| Conversation history (10 messages) | ~1,200 |
+| **Total** | **~3,350** |
+| **Remaining for response** | **~650** |
+
+If context exceeds budget: prioritize property-specific chunks over general ones; drop lowest-relevance chunks first.
+
+---
+
+# PHASE 3 — QA Review Agent
+
+## 3.1 Objective
+
+Before Bessie's forecast and commentary reach the user, a separate independent review process validates the output for mathematical correctness, business rule compliance, and commentary accuracy. This is the final trust layer before delivery.
+
+## 3.2 Architecture: Deterministic First, LLM Second
+
+**The QA agent is mostly deterministic.** Roughly 80% of validation should be Code nodes performing math checks, schema checks, and rule enforcement. Only 20% should involve an LLM call (for commentary alignment and assumption reasonableness checks that require language understanding).
+
+This keeps QA fast, cheap, and reliable. An LLM-based QA agent that re-reads everything would be slow and expensive, and could hallucinate its own false positives.
+
+## 3.3 Validation Checks
+
+### Tier 1 — Deterministic Checks (Code node, no LLM)
+
+These checks never fail due to LLM misinterpretation. They are binary pass/fail.
+
+**Math reconciliation:**
+```javascript
+// YTD Revenue check: sum of monthly actuals should equal ytd_total
+const actuals41100 = forecastData.actuals.find(r => r.gl_code === '45990');
+const monthlySum = actualsMonths.reduce((sum, mk) => sum + (actuals41100[mk] || 0), 0);
+const ytdReported = actuals41100.ytd_total;
+const tolerance = Math.abs(ytdReported) * 0.001; // 0.1% tolerance for rounding
+if (Math.abs(monthlySum - ytdReported) > tolerance) {
+  issues.push(`FAIL: GL 45990 ytd_total ${ytdReported} does not match sum of monthly actuals ${monthlySum}`);
+}
+```
+
+**Period integrity:**
+```javascript
+// Forecast months must all be in the future relative to actuals
+const lastActualMonth = new Date(forecastData.actualsMonths.slice(-1)[0]);
+for (const fm of forecastData.forecastMonths) {
+  if (new Date(fm) <= lastActualMonth) {
+    issues.push(`FAIL: Forecast month ${fm} is not after last actual month ${forecastData.actualsMonths.slice(-1)[0]}`);
+  }
+}
+```
+
+**Scenario consistency:**
+```javascript
+// Upside NOI must be >= Baseline NOI >= Downside NOI
+const noiBL = keyFindings.fullYearNOIBaseline;
+const noiUp = forecastData.upside.find(r => r.gl_code === '90010')?.forecast_total || 0;
+const noiDn = forecastData.downside.find(r => r.gl_code === '90010')?.forecast_total || 0;
+if (!(noiDn <= noiBL && noiBL <= noiUp)) {
+  issues.push(`WARN: Scenario ordering unexpected — Downside NOI ${noiDn} / Baseline ${noiBL} / Upside ${noiUp}`);
+}
+```
+
+**Data completeness:**
+```javascript
+// Check all 4 expected anchor GLs are present in actuals
+const required = ['45990', '90000', '90010'];
+for (const gl of required) {
+  if (!forecastData.actuals.find(r => r.gl_code === gl)) {
+    issues.push(`FAIL: Required anchor GL ${gl} missing from actuals`);
+  }
+}
+// Check actuals count matches dataQuality field
+if (forecastData.actualsMonths.length !== forecastData.dataQuality.actualsMonthsAvailable) {
+  issues.push(`FAIL: actualsMonths length ${forecastData.actualsMonths.length} ≠ dataQuality.actualsMonthsAvailable ${forecastData.dataQuality.actualsMonthsAvailable}`);
+}
+```
+
+**Confidence score computation (deterministic):**
+```javascript
+const totalChecks = deterministicChecks.length;
+const passed = deterministicChecks.filter(c => c.result === 'PASS').length;
+const warnings = deterministicChecks.filter(c => c.result === 'WARN').length;
+const confidenceScore = (passed + (warnings * 0.5)) / totalChecks;
+// < 0.7 = FAIL, 0.7–0.9 = REVIEW, > 0.9 = PASS
+```
+
+### Tier 2 — LLM Review (Claude, separate call)
+
+Only invoked if Tier 1 passes. Asks a narrow set of structured questions to avoid open-ended hallucination risk.
+
+**System prompt for Review Agent:**
+```
+You are a financial QA reviewer for a real estate FP&A system. You will be given:
+1. A structured forecast output (keyFindings JSON)
+2. The commentary text Bessie produced
+3. A set of yes/no validation questions
+
+Answer each question with EXACTLY: PASS, FAIL, or UNCERTAIN.
+For FAIL and UNCERTAIN answers, provide a single sentence of explanation.
+Do not add commentary beyond what is asked. Do not compute new figures.
+```
+
+**Validation questions passed to Review Agent LLM:**
+1. Does the commentary's YTD Revenue figure match `keyFindings.ytdRevenue`? [PASS/FAIL]
+2. Does the commentary's NOI Margin match `keyFindings.ytdNOIMargin`? [PASS/FAIL]
+3. Does the top favourable variance cited in commentary match `keyFindings.topFavourableVariances[0]`? [PASS/FAIL]
+4. Are all numeric claims in the commentary supported by keyFindings data? [PASS/FAIL/UNCERTAIN]
+5. Does the commentary avoid making estimates or calculations not present in keyFindings? [PASS/FAIL]
+6. Is the tone consistent with a professional FP&A report (not conversational or speculative)? [PASS/FAIL]
+
+## 3.4 Review Agent n8n Workflow
+
+```
+[Input: Tool 6 output + Bessie's draft commentary]
+        ↓
+[Code: Tier 1 Deterministic Checks]
+        ↓
+[IF: All critical checks PASS?]
+   ↙ No                      ↘ Yes
+[Code: Classify failure]    [HTTP: Claude API — Tier 2 LLM Review]
+   ↓                              ↓
+[Is it auto-correctable?]   [Code: Parse LLM review response]
+   ↙ Yes      ↘ No                ↓
+[Retry Tool 6]  [Escalate]  [IF: All LLM checks PASS?]
+(max 2 retries)                ↙ No           ↘ Yes
+                         [Escalate]       [Compute final
+                                          confidence score]
+                                               ↓
+                                         [IF: score >= 0.85?]
+                                            ↙ No    ↘ Yes
+                                      [Human     [DELIVER
+                                       Review]    to user]
+```
+
+### Feedback Loop on Failure
+
+When a check fails and is auto-correctable:
+- The retry sends Tool 6's output back through the computation with a correction hint
+- Maximum 2 retry attempts before escalating to human review
+- The correction hint is injected as an additional constraint: `"Previous run failed: [issue]. Ensure [specific rule] is applied in this run."`
+
+### Escalation Path
+
+When a check fails and is NOT auto-correctable (e.g. source data missing, math doesn't reconcile):
+1. Notify user: "This forecast requires human review before delivery — [reason]"
+2. Log in audit sheet with `qa_result = ESCALATED`
+3. Optionally: send Telegram notification to designated reviewer
+
+## 3.5 Confidence Score Tiers
+
+| Score | Status | Action |
+|---|---|---|
+| ≥ 0.90 | ✅ HIGH CONFIDENCE | Auto-deliver |
+| 0.75–0.89 | ⚠️ MEDIUM CONFIDENCE | Deliver with disclaimer: "This forecast has not been manually reviewed" |
+| 0.60–0.74 | ⚠️ LOW CONFIDENCE | Deliver with strong warning + flag for human review |
+| < 0.60 | ❌ FAIL | Do not deliver; escalate to human reviewer |
+
+---
+
+# Implementation Roadmap
+
+## Phase 1 — Security & Governance (Weeks 1–3, Do These First)
+
+| Week | Task | Priority | Complexity |
+|---|---|---|---|
+| 1 | Telegram user ID whitelist | 🔴 Critical | Low |
+| 1 | Input sanitization node | 🔴 Critical | Low |
+| 1 | Tool 6 output schema validation | 🔴 Critical | Medium |
+| 1 | Prompt v7 anti-hallucination rules | 🔴 Critical | Low |
+| 2 | Audit log — Google Sheets | 🟡 High | Low |
+| 2 | Secrets inventory — document all credentials | 🟡 High | Low |
+| 2 | n8n encryption key set in Docker | 🟡 High | Low |
+| 3 | End-to-end governance test run | Required | — |
+| 3 | Update GitHub docs | Required | — |
+
+## Phase 2 — RAG Knowledge Pipeline (Weeks 4–9)
+
+| Week | Task | Priority | Complexity |
+|---|---|---|---|
+| 4 | Write 5 highest-priority knowledge docs (Forecast Methodology, GL Guide, Variance Methodology, Commentary Style, KPI Definitions) | 🔴 Critical | Medium |
+| 4 | Set up Qdrant Cloud account + collection | 🔴 Critical | Low |
+| 4 | Add OpenAI API credential to n8n | 🔴 Critical | Low |
+| 5 | Build RAG Ingestor workflow (n8n) | 🔴 Critical | High |
+| 5 | Ingest first 5 documents, validate retrieval quality | 🔴 Critical | Medium |
+| 6 | Build retrieval pre-processing step in Bessie chat flow | 🟡 High | Medium |
+| 6 | Update system prompt v7 to consume RAG context block | 🟡 High | Low |
+| 7 | Write remaining priority documents (all 09 folders) | 🟡 High | Medium |
+| 7 | Tune retrieval (top-K, metadata filters, relevance threshold) | 🟡 High | Medium |
+| 8 | RAG re-ingestion testing (update a doc, verify change propagates) | Required | Low |
+| 9 | End-to-end RAG test + update GitHub docs | Required | — |
+
+## Phase 3 — QA Review Agent (Weeks 10–13)
+
+| Week | Task | Priority | Complexity |
+|---|---|---|---|
+| 10 | Build Tier 1 deterministic checks Code node | 🔴 Critical | Medium |
+| 10 | Build confidence score computation | 🟡 High | Low |
+| 11 | Build Tier 2 LLM Review call (Claude, structured questions) | 🟡 High | Medium |
+| 11 | Build delivery gate (IF node on confidence score) | 🟡 High | Low |
+| 12 | Build retry/feedback loop (max 2 retries) | 🟡 High | High |
+| 12 | Build escalation path + Telegram notification | 🟡 High | Medium |
+| 12 | Integrate Review Agent as Tool 7 in Bessie | 🟡 High | Medium |
+| 13 | End-to-end QA test across multiple properties/periods | Required | — |
+| 13 | Update GitHub docs + audit log schema update | Required | — |
+
+---
+
+# Risks, Trade-Offs & Best Practices
+
+## Phase 1 Risks
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Whitelist env var too strict — locks out legitimate users | Medium | Medium | Keep whitelist in Google Sheet for easy non-developer updates |
+| Schema validation too strict — blocks valid edge-case outputs | Low | High | Log validation failures for first 2 weeks before hard-blocking |
+| Audit log Google Sheet hits row limit (10M rows) | Very Low | Low | Archive annually to new sheet |
+
+## Phase 2 Risks
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Knowledge docs are stale/wrong — RAG makes Bessie more confidently wrong | Medium | High | Quarterly review cycle; every doc has `last_reviewed` date; flag docs > 6 months old |
+| Retrieval returns irrelevant chunks — context pollution | Medium | Medium | Filter by `applicable_properties` and `status=active`; tune relevance threshold |
+| OpenAI embedding cost spikes | Low | Low | text-embedding-3-small is ~$0.002 per full re-ingest of 50 docs; negligible |
+| Qdrant Cloud free tier insufficient | Low | Low | Free tier supports 1GB / 1M vectors; easily sufficient for years |
+
+## Phase 3 Risks
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Retry loop causes runaway costs | Low | Medium | Hard cap: max 2 retries per run; retry logged to audit sheet |
+| LLM Review Agent hallucinates false positives | Medium | Medium | Narrow structured questions reduce surface area; Tier 1 deterministic checks carry more weight |
+| Confidence threshold too high — too many escalations | Medium | Low | Start at 0.75 threshold, tune upward after 20+ production runs |
+
+## Best Practices Summary
+
+1. **Build Phase 1 before any real-property forecasts.** Governance is not optional for financial data.
+2. **Start RAG with 5 high-quality documents, not 50 mediocre ones.** Quality of knowledge matters more than quantity.
+3. **The QA agent's Tier 1 checks are the most valuable thing in Phase 3.** Even without the LLM review layer, deterministic math checks alone prevent the most damaging failures.
+4. **Version everything.** System prompts, knowledge docs, n8n workflows — all in GitHub with commit messages explaining why a change was made.
+5. **Never trust a confidence score you haven't tested.** Run the QA agent against 10 known-good and 5 known-bad outputs before deploying to production.
+
+---
+
+# Future Scalability
+
+## Power Automate Migration
+
+| Capability | n8n today | Power Automate future |
+|---|---|---|
+| Excel formatting (CF, dropdowns) | ❌ SheetJS limitation | ✅ Office Scripts + Excel Online |
+| SharePoint document store | ❌ Not available | ✅ Native |
+| Teams notifications | ❌ Requires custom webhook | ✅ Native connector |
+| Approval workflows (Power Automate Approvals) | ❌ Manual escalation | ✅ Native approval flows |
+| Audit logging | Google Sheets | SharePoint List or Dataverse |
+
+Migration recommendation: migrate the Excel generation step first (highest value), then the document store (enables SharePoint-native RAG), then the approval workflows.
+
+## Yardi YDC Integration (Direct API)
+
+Currently Bessie reads Yardi data via manually exported Excel files in Google Drive. Direct YDC integration eliminates the manual export step:
+
+- Yardi Data Connect (YDC) provides REST APIs for GL data, rent roll, and budgets
+- n8n can call YDC APIs directly via HTTP Request node
+- Replace the 4 Google Drive file-reading branches in Tool 6 with 4 YDC API calls
+- This enables real-time data (not export-lag dependent) and eliminates the manual upload workflow
+
+**Pre-requisite:** YDC requires a Yardi subscription add-on and IT approval. Plan this as a Phase 4 item.
+
+## Multi-Property Batch Mode
+
+Currently Bessie runs one property at a time (chat-driven). A scheduled batch workflow can loop over all 7 properties:
+
+```
+[Schedule Trigger — quarterly]
+        ↓
+[Code: Load property list from config]
+        ↓
+[Loop over properties]
+        ↓
+[Call Tool 6 for each property]
+        ↓ (after all complete)
+[Call Tool 7 QA for each output]
+        ↓
+[Aggregate summary report → email/Teams]
+```
+
+This requires no changes to Tool 6 or the QA agent — just a wrapper loop.
+
+---
+
+# GitHub Repository Updates Required
+
+| File | Action | Notes |
+|---|---|---|
+| `/docs/bessie-enterprise-roadmap.md` | **NEW** | This document |
+| `/docs/system-prompt.md` | **UPDATE** | Add Phase 1 anti-hallucination rules |
+| `/docs/rag-architecture.md` | **NEW** | RAG design detail (separate doc) |
+| `/docs/qa-review-agent.md` | **NEW** | Phase 3 design detail |
+| `/code/auth-user.js` | **NEW** | Phase 1 user whitelist check |
+| `/code/sanitize-input.js` | **NEW** | Phase 1 input sanitization |
+| `/code/validate-tool6-output.js` | **NEW** | Phase 1 schema validation |
+| `/code/audit-log.js` | **NEW** | Phase 1 audit log formatter |
+| `/code/rag-ingestor.js` | **NEW** | Phase 2 document chunker |
+| `/code/rag-retrieval.js` | **NEW** | Phase 2 query + context builder |
+| `/code/qa-tier1-checks.js` | **NEW** | Phase 3 deterministic validation |
+| `/code/qa-confidence-score.js` | **NEW** | Phase 3 confidence scorer |
+| `/CLAUDE.md` | **UPDATE** | Add Phase 1–3 summary sections |
+| `/docs/workflow-design.md` | **UPDATE** | Add Tool 7 (QA) and RAG pre-processing nodes |
