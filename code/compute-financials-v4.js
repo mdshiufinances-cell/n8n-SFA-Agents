@@ -24,8 +24,11 @@
 // ── READ TRIGGER PARAMS ──────────────────────────────
 const trigger     = $('When Executed by Another Workflow').first().json;
 const propertyCode = trigger.propertyCode || 'prop01';
-const period       = trigger.period       || '2026-Q3';
-const fiscalYear   = trigger.fiscalYear   || 'FY2026';
+// period and fiscalYear from the agent are used as fallbacks only —
+// they are overridden below once we have the actual file data.
+// This prevents agent date-confusion from producing wrong labels.
+let period       = trigger.period     || '';
+let fiscalYear   = trigger.fiscalYear || '';
 
 // ── COLLECT FILE DATA FROM MERGED BRANCHES ───────────
 const allItems = $input.all();
@@ -63,6 +66,46 @@ const forecastMonths    = actualsResult.forecastMonths  || [];
 const pyActualsData     = pyResult       ? (pyResult.data       || []) : [];
 const budgetData        = budgetResult   ? (budgetResult.data   || []) : [];
 const rentRollData      = rentRollResult ? (rentRollResult.data || []) : [];
+
+// ── AUTO-DERIVE PERIOD AND FISCAL YEAR FROM FILE ──────
+// Use the first forecast month to determine the period label.
+// This is file-driven (from the Yardi export's own header dates),
+// so it's always correct regardless of what the agent guessed.
+// FY runs Jul 1 – Jun 30. Quarters: Q1=Jul-Sep, Q2=Oct-Dec, Q3=Jan-Mar, Q4=Apr-Jun.
+const QUARTER_MAP = {
+  Jan:3, Feb:3, Mar:3,
+  Apr:4, May:4, Jun:4,
+  Jul:1, Aug:1, Sep:1,
+  Oct:2, Nov:2, Dec:2
+};
+
+if (forecastMonths.length > 0) {
+  // Parse first forecast month label, e.g. "Apr 2026"
+  const firstFcMatch = forecastMonths[0].match(/^(\w{3})\w*\s+(\d{4})$/);
+  if (firstFcMatch) {
+    const mon = firstFcMatch[1];  // e.g. "Apr"
+    const yr  = parseInt(firstFcMatch[2]); // e.g. 2026
+    const q   = QUARTER_MAP[mon] || 1;
+    // FY label: if month is Jul-Dec the FY year is yr+1, else yr
+    const fyYear = ['Jul','Aug','Sep','Oct','Nov','Dec'].includes(mon) ? yr + 1 : yr;
+    period     = `${yr}-Q${q}`;
+    fiscalYear = `FY${fyYear}`;
+  }
+} else if (actualsMonths.length > 0) {
+  // All 12 months are actual (nothing left to forecast — full-year close)
+  const lastActMatch = actualsMonths[actualsMonths.length - 1].match(/^(\w{3})\w*\s+(\d{4})$/);
+  if (lastActMatch) {
+    const mon = lastActMatch[1];
+    const yr  = parseInt(lastActMatch[2]);
+    const fyYear = ['Jul','Aug','Sep','Oct','Nov','Dec'].includes(mon) ? yr + 1 : yr;
+    period     = `${fyYear}-Full`;
+    fiscalYear = `FY${fyYear}`;
+  }
+}
+
+// Final fallback if period still empty (e.g. no months detected at all)
+if (!period)     period     = trigger.period     || 'unknown-period';
+if (!fiscalYear) fiscalYear = trigger.fiscalYear || 'FY-unknown';
 
 // ── HELPERS ──────────────────────────────────────────
 function toShortKey(label) {
@@ -341,6 +384,16 @@ if (actualsMonths.length < 9) warningFlags.push(`Only ${actualsMonths.length} mo
 const forecastData = {
   property: propertyCode, period, fiscalYear,
   generatedAt: new Date().toISOString(),
+  // Period detection — needed by the Excel generator to determine which
+  // of the 12 fiscal columns (Jul..Jun) are actual vs forecast this run.
+  // Without these, the workbook generator would have to guess the
+  // actual/forecast split from array lengths alone, which is fragile.
+  actualsMonths,      // full labels, e.g. ["Jul 2025", ..., "Mar 2026"]
+  forecastMonths,     // full labels, e.g. ["Apr 2026", "May 2026", "Jun 2026"]
+  trailingAvgMonths,  // full labels, last 3 (or fewer) of actualsMonths
+  actualsKeys,        // short keys, e.g. ["Jul-25", ..., "Mar-26"] — matches actuals[] row keys
+  forecastKeys,       // short keys, e.g. ["Apr-26", "May-26", "Jun-26"] — matches baseline[]/upside[]/downside[] row keys
+  trailingKeys,       // short keys — matches the trailing-average columns
   dataQuality: {
     hasPriorYearActuals: pyActuals.length > 0,
     hasPriorYearBudget: false, hasPriorYearRentRoll: false,
