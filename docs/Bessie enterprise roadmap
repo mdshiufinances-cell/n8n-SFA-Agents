@@ -1,842 +1,981 @@
-# Bessie Enterprise AI FP&A — Security, RAG & QA Roadmap
+# Bessie Enterprise FP&A Platform — Architecture & Roadmap v2.0
 
-**Version:** 1.0
+**Version:** 2.0
 **Date:** 2026-07-01
-**Owner:** Bessie Project — FP&A AI Team
-**Status:** Draft / Implementation Blueprint
+**Supersedes:** bessie-enterprise-roadmap.md v1.0
+**Status:** Architecture Blueprint — Approved for Phased Implementation
+**Owner:** FP&A AI Platform Team
 
 ---
 
-## Executive Summary
+# 1. Executive Summary
 
-This roadmap transforms Bessie from a functional forecasting agent into a **production-grade enterprise FP&A AI system** with three interconnected enhancements:
+Bessie evolves from a single-purpose forecasting agent into an **Enterprise FP&A Platform** supporting five capability domains — **Forecasting, Budgeting, Variance Analysis, Reporting, and Planning** — on a layered architecture designed for:
 
-| Phase | Initiative | Priority | Estimated Effort |
+| Design Goal | How It's Achieved |
+|---|---|
+| **Zero hallucinated numbers** | Deterministic Compute Layer performs 100% of financial math; AI Reasoning Layer only explains pre-computed results |
+| **Governance & auditability** | Every run logged with full lineage: inputs → rules applied → outputs → QA verdict → delivery |
+| **Token efficiency** | Intent Router uses lightweight classification; RAG replaces prompt-stuffing; caching in Shared Services |
+| **Platform portability** | Business logic isolated in Code nodes + config tables; n8n is orchestration only; every component maps 1:1 to a Power Automate equivalent |
+| **Scalability** | Config-driven property/entity registry; nothing hardcoded; 7 properties or 700 — same workflows |
+| **Maintainability** | Seven isolated layers with defined contracts; a change to business rules never touches orchestration |
+
+**Interface strategy:** n8n Chat window today → **Microsoft Teams** at migration. Telegram is removed from the architecture entirely.
+
+---
+
+# 2. Platform Architecture — Seven Layers
+
+```
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                    BESSIE ENTERPRISE FP&A PLATFORM v2.0                         │
+│                                                                                  │
+│  INTERFACE          ┌────────────────┐        ┌──────────────────┐             │
+│  (swappable)        │  n8n Chat      │  ───▶  │  Microsoft Teams  │  (future)   │
+│                     │  (current)     │        │  (via PA + Bot)   │             │
+│                     └───────┬────────┘        └──────────────────┘             │
+│                             ▼                                                    │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │ SHARED SERVICES (cross-cutting — every request passes through)            │  │
+│  │  AuthN/AuthZ · Secrets · Config Registry · Prompt Templates ·             │  │
+│  │  Audit Logging · Metadata Store · Cache · Observability Emitters          │  │
+│  └───────────────────────────────┬──────────────────────────────────────────┘  │
+│                                  ▼                                              │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │ INTENT ROUTER (lightweight classification — Haiku-class model)            │  │
+│  │  Classifies: FORECAST | BUDGET | VARIANCE | REPORT | PLAN | KNOWLEDGE_QA  │  │
+│  │            | ADMIN | OUT_OF_SCOPE                                          │  │
+│  └──────┬──────────┬──────────┬──────────┬──────────┬──────────┬────────────┘  │
+│         ▼          ▼          ▼          ▼          ▼          ▼                │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │ CAPABILITY WORKFLOWS (one sub-workflow per domain — modular, isolated)    │  │
+│  │  WF-Forecast · WF-Budget · WF-Variance · WF-Report · WF-Plan · WF-KnowQA │  │
+│  └──────┬───────────────────────────────────────────────────────────────────┘  │
+│         │  each capability workflow orchestrates the layers below:              │
+│         ▼                                                                        │
+│  ┌────────────────────┐   ┌────────────────────┐   ┌────────────────────────┐  │
+│  │ FINANCIAL DATA     │   │ BUSINESS RULES     │   │ RAG KNOWLEDGE LAYER    │  │
+│  │ LAYER              │   │ ENGINE             │   │                        │  │
+│  │ Yardi exports →    │   │ Config-driven      │   │ WF-KB-Ingest (Drive →  │  │
+│  │ Google Drive       │   │ rules: periods,    │   │  chunk → embed →       │  │
+│  │ (future: YDC API,  │   │ overrides, GL      │   │  Qdrant)               │  │
+│  │  SharePoint)       │   │ validation,        │   │ WF-KB-Retrieve (query  │  │
+│  │                    │   │ materiality,       │   │  → search → context)   │  │
+│  └─────────┬──────────┘   │ approvals          │   └───────────┬────────────┘  │
+│            │              └─────────┬──────────┘               │                │
+│            ▼                        ▼                          │                │
+│  ┌──────────────────────────────────────────────┐              │                │
+│  │ DETERMINISTIC COMPUTE LAYER                   │              │                │
+│  │ 100% of financial math. No LLM involvement.  │              │                │
+│  │ compute-financials · generate-workbook ·      │              │                │
+│  │ variance-calc · budget-build · consolidation  │              │                │
+│  └─────────────────────┬────────────────────────┘              │                │
+│                        ▼                                       ▼                │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │ AI REASONING LAYER (Sonnet-class model)                                   │  │
+│  │ Receives: pre-computed results + retrieved knowledge + prompt template    │  │
+│  │ Produces: commentary, explanations, narratives — NEVER calculations       │  │
+│  └─────────────────────┬────────────────────────────────────────────────────┘  │
+│                        ▼                                                        │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │ QA / REVIEW LAYER (Tool 7)                                                 │  │
+│  │ Tier 1: deterministic checks (math, periods, rules, schema)               │  │
+│  │ Tier 2: LLM structured review (commentary vs data, attribution)           │  │
+│  │ Confidence score → deliver / retry (max 2) / escalate to human            │  │
+│  └─────────────────────┬────────────────────────────────────────────────────┘  │
+│                        ▼                                                        │
+│                 [ Deliver to user with confidence badge + source citations ]    │
+└────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## 2.1 Layer Contracts
+
+Each layer exposes a defined contract. Layers never reach around each other.
+
+| Layer | Input Contract | Output Contract | May Call |
 |---|---|---|---|
-| 1 | Security & Governance Guardrails | 🔴 Immediate | 2–3 weeks |
-| 2 | RAG Knowledge Pipeline | 🟡 High | 4–6 weeks |
-| 3 | QA Review Agent | 🟡 High | 3–4 weeks |
+| Interface | User message | `{userId, channel, rawInput}` | Shared Services |
+| Intent Router | Sanitized input | `{intent, entities: {property, period, glCodes}, confidence}` | AI (Haiku-class) |
+| Capability Workflow | Router output | Domain result object | All layers below |
+| Financial Data | `{propertyCode, fileType}` | `{success, data[], periodArrays}` | Drive/YDC only |
+| Business Rules Engine | `{ruleSet, context}` | `{rules[], validationResults[]}` | Config store only |
+| Deterministic Compute | Data + rules | `{computedResults, lineage}` | Nothing (pure functions) |
+| RAG Retrieval | `{query, filters}` | `{chunks[], sources[]}` | Qdrant only |
+| AI Reasoning | Computed results + knowledge + template | `{commentary, citations[]}` | LLM API only |
+| QA/Review | Full run bundle | `{verdict, confidenceScore, issues[]}` | Compute + LLM |
+| Shared Services | (cross-cutting) | (per service) | — |
 
-**Guiding principle across all phases:** AI explains and interprets — deterministic code calculates. Bessie should never be trusted to perform arithmetic; she should only reason about numbers computed by verified code.
-
----
-
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         BESSIE ENTERPRISE ARCHITECTURE                       │
-│                                                                               │
-│  ┌──────────┐   ┌──────────────────────────────────────────────────────┐    │
-│  │ Telegram │   │                    n8n Orchestration                  │    │
-│  │ (Auth'd) │──▶│                                                       │    │
-│  └──────────┘   │  ┌─────────────┐    ┌─────────────────────────────┐  │    │
-│                 │  │  PHASE 1    │    │         PHASE 2              │  │    │
-│  ┌──────────┐   │  │  Governance │    │         RAG Pipeline          │  │    │
-│  │ n8n Chat │──▶│  │  Guardrails │    │  ┌─────────────────────────┐ │  │    │
-│  └──────────┘   │  │             │    │  │   Google Drive          │ │  │    │
-│                 │  │ • User auth │    │  │   Knowledge Base        │ │  │    │
-│                 │  │ • Input val │    │  │   (SOPs, Policies, etc) │ │  │    │
-│                 │  │ • Schema val│    │  └──────────┬──────────────┘ │  │    │
-│                 │  │ • Audit log │    │             │ Ingest         │  │    │
-│                 │  │ • Secrets   │    │  ┌──────────▼──────────────┐ │  │    │
-│                 │  └──────┬──────┘    │  │   Qdrant Vector DB     │ │  │    │
-│                 │         │           │  │   (Embeddings + Meta)   │ │  │    │
-│                 │         ▼           │  └──────────┬──────────────┘ │  │    │
-│                 │  ┌─────────────┐    │             │ Retrieve        │  │    │
-│                 │  │  Tool 6     │    └─────────────┼─────────────────┘  │    │
-│                 │  │  (Compute + │◀────────────────┘                     │    │
-│                 │  │   Excel)    │    RAG context injected                │    │
-│                 │  └──────┬──────┘    into system prompt                 │    │
-│                 │         │                                               │    │
-│                 │         ▼           ┌─────────────────────────────┐    │    │
-│                 │  ┌─────────────┐    │         PHASE 3              │    │    │
-│                 │  │  REVIEW     │    │         QA Review Agent      │    │    │
-│                 │  │  AGENT      │◀───│  • Math reconciliation       │    │    │
-│                 │  │  (Tool 7)   │    │  • Period integrity checks   │    │    │
-│                 │  └──────┬──────┘    │  • Commentary validation     │    │    │
-│                 │         │           │  • Confidence scoring        │    │    │
-│                 │         │ Pass      │  • Feedback loop             │    │    │
-│                 │         ▼           └─────────────────────────────┘    │    │
-│                 │  ┌─────────────┐                                        │    │
-│                 │  │  Deliver    │    Fail → Retry (max 2) → Escalate     │    │
-│                 │  │  to User    │                                        │    │
-│                 │  └─────────────┘                                        │    │
-│                 └──────────────────────────────────────────────────────┘    │
-│                                                                               │
-│  ┌───────────────────────────────────────────────────────────────────────┐   │
-│  │  SHARED INFRASTRUCTURE                                                 │   │
-│  │  Yardi Voyager → Google Drive (OAuth2) → n8n 2.28.3 → Claude Sonnet   │   │
-│  │  Audit Log (Google Sheets) | Secrets (env vars) | GitHub (docs/code)  │   │
-│  └───────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+**Why contracts matter for migration:** each contract maps directly to a Power Automate child-flow input/output schema. Migrating a layer = rebuilding one flow against a known interface, with every other layer untouched.
 
 ---
 
-# PHASE 1 — Security & Governance Guardrails
+# 3. Interface Layer
 
-## 1.1 Objective
+## 3.1 Current: n8n Chat
 
-Ensure every Bessie output is traceable to approved source data, every calculation is performed by deterministic code (never the LLM), and every interaction is logged. Build the minimum governance layer required before Bessie's output can be trusted in a production context.
+- n8n Chat Hub trigger (already live)
+- Session-scoped memory (10 messages)
+- No Telegram anywhere in the architecture (removed)
 
-## 1.2 Governance Framework
+## 3.2 Future: Microsoft Teams
 
-### Principle 1 — AI Explains, Code Calculates
+Target pattern: **Teams → Power Automate trigger ("When a new message is added") or Azure Bot → HTTP call to orchestration → response as Adaptive Card.**
 
-**The single most important rule.** Claude should never compute a financial figure — it should only interpret figures that Tool 6 (deterministic code) has already computed.
+Migration-friendly decisions made now:
+- The Interface layer only produces `{userId, channel, rawInput}` — a schema Teams can produce identically
+- Response formatting is isolated in one "Format Response" component; Teams Adaptive Cards replace Markdown formatting by swapping that single component
+- AuthN happens in Shared Services against a user registry, not against channel-specific identity — Teams AAD identity slots into the same check
 
-| Do | Don't |
+**Design rule:** nothing downstream of the Interface layer may inspect `channel` except the final Format Response step.
+
+---
+
+# 4. Intent Router
+
+## 4.1 Purpose
+
+Classify every request BEFORE any heavy processing, so that:
+- Simple knowledge questions never trigger a full forecast run (token + latency savings)
+- Each domain gets a specialized workflow with a minimal, focused prompt (token efficiency)
+- Out-of-scope requests are rejected early with zero LLM reasoning cost
+- Entity extraction (property, period, GL codes) happens once, in one place
+
+## 4.2 Design
+
+**Model choice: Haiku-class (claude-haiku-4-5 or equivalent lightweight model).**
+Classification and entity extraction do not need a reasoning model. Cost comparison per 1,000 requests (approximate, illustrative):
+
+| Approach | Est. tokens/request | Relative cost | Accuracy |
+|---|---|---|---|
+| Sonnet does everything (current) | ~4,000 | 100% | High but wasteful |
+| Haiku router + Sonnet only when needed | ~300 router + domain-specific | ~35–50% | Equal or better (focused prompts) |
+
+**Router system prompt (compact — ~250 tokens):**
+
+```
+You are an intent classifier for an FP&A platform. Output ONLY valid JSON.
+
+Classify the user request into exactly one intent:
+- FORECAST: generate/update a financial forecast
+- BUDGET: create/modify/question a budget
+- VARIANCE: explain differences between actuals/budget/forecast
+- REPORT: produce a formatted report or workbook from existing results
+- PLAN: scenario planning, what-if, multi-year planning
+- KNOWLEDGE_QA: question about methodology, policy, process, definitions
+- ADMIN: status checks, list properties, help
+- OUT_OF_SCOPE: anything else
+
+Extract entities when present:
+- property: prop01..prop07 (also map: TO→prop01, TP→prop02, LP→prop03, BP→prop04, 44B→prop05, 118B→prop06, 99D→prop07)
+- period: e.g. "2026-Q4"
+- glCodes: array of 5-digit GL codes mentioned
+
+Output schema:
+{"intent":"...", "entities":{"property":"...","period":"...","glCodes":[]}, "confidence":0.0-1.0}
+
+If confidence < 0.6, set intent to CLARIFY and include "clarifyQuestion".
+```
+
+**Routing logic (n8n Switch node on `intent`):**
+
+```
+[Sanitized input]
+      ↓
+[HTTP: Haiku classification call]
+      ↓
+[Code: parse + validate router JSON]
+      ↓
+[Switch: intent]
+  ├── FORECAST      → WF-Forecast (existing Tool 6 chain)
+  ├── BUDGET        → WF-Budget
+  ├── VARIANCE      → WF-Variance
+  ├── REPORT        → WF-Report
+  ├── PLAN          → WF-Plan
+  ├── KNOWLEDGE_QA  → WF-KB-Retrieve → AI answer with citations (no compute)
+  ├── ADMIN         → deterministic responses (no LLM at all)
+  ├── CLARIFY       → return clarifyQuestion to user
+  └── OUT_OF_SCOPE  → polite refusal template (no LLM)
+```
+
+**Token optimization notes:**
+- ADMIN and OUT_OF_SCOPE consume zero Sonnet tokens
+- KNOWLEDGE_QA consumes retrieval + one small Sonnet call — never a compute run
+- Router JSON is validated by code; malformed output → single retry → fallback to CLARIFY
+
+## 4.3 Migration Mapping
+
+| n8n component | Power Automate equivalent |
 |---|---|
-| "GL 90010 shows NOI of $6.15M (from Yardi actuals Jul–Mar)" | "I estimate NOI is approximately $6M" |
-| "Baseline forecast uses trailing 3-month average per methodology" | "I think revenue will be around $1.1M/month" |
-| "Vacancy improved 10% vs trailing avg per system prompt rule" | "Vacancy looks about 10% better than usual" |
-
-**Enforcement mechanism:** The system prompt explicitly prohibits Bessie from performing math or estimating quantities not present in Tool 6's `keyFindings` output. The QA Review Agent (Phase 3) checks for unsupported numeric claims.
-
-### Principle 2 — Source Attribution on Every Number
-
-Every figure in Bessie's response must be traceable to one of:
-- A GL code in a Yardi actuals file
-- A computed field in `keyFindings` from Tool 6
-- A rule in the RAG knowledge base (Phase 2)
-- A documented assumption in the system prompt
-
-Figures without clear attribution are flagged as a QA failure in Phase 3.
-
-### Principle 3 — Deterministic First, AI Second
-
-The processing chain enforces this order:
-1. Tool 6 runs deterministic code (no LLM involved)
-2. Review Agent runs deterministic validation checks (no LLM)
-3. LLM commentary is generated ONLY after Steps 1 and 2 pass
-4. LLM receives pre-validated numbers — it cannot alter them
-
-## 1.3 Implementation Components
-
-### A. Telegram User ID Whitelist (Highest Priority)
-
-Currently Bessie has no authentication. Any Telegram user who knows the chat URL can invoke it.
-
-**Implementation:**
-- In the Chat Trigger node (or an early Code node), check the incoming user ID against an approved list
-- Store the whitelist in an n8n environment variable or a Google Sheet (Google Sheet preferred — allows non-developer updates)
-
-```javascript
-// Code node: Authenticate User (runs before AI Agent)
-const ALLOWED_USERS = (process.env.BESSIE_ALLOWED_USERS || '').split(',').map(s => s.trim());
-const userId = $input.first().json.userId || $input.first().json.chatId || '';
-
-if (ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(String(userId))) {
-  return [{ json: {
-    blocked: true,
-    message: `Access denied. User ID ${userId} is not authorized. Contact your system administrator.`
-  }}];
-}
-return [{ json: { blocked: false, userId } }];
-```
-
-- Add an IF node after this: if `blocked === true`, return the denial message without passing to AI Agent
-- Add authorized user IDs to `BESSIE_ALLOWED_USERS` env var (comma-separated) in Hostinger Docker Manager
-
-### B. Input Sanitization
-
-Prevent prompt injection and malformed requests before they reach the LLM.
-
-```javascript
-// Code node: Sanitize Input
-const raw = $input.first().json.chatInput || '';
-
-const issues = [];
-
-// Block prompt injection patterns
-const injectionPatterns = [
-  /ignore (previous|all|above) instructions/i,
-  /system prompt/i,
-  /you are now/i,
-  /pretend (you are|to be)/i,
-  /jailbreak/i,
-  /DAN mode/i,
-];
-for (const p of injectionPatterns) {
-  if (p.test(raw)) issues.push('Potential prompt injection detected');
-}
-
-// Block excessively long inputs (>2000 chars is unusual for a forecast request)
-if (raw.length > 2000) issues.push('Input exceeds 2000 character limit');
-
-if (issues.length > 0) {
-  return [{ json: {
-    blocked: true,
-    message: `Your request could not be processed: ${issues.join('; ')}. Please rephrase and try again.`
-  }}];
-}
-return [{ json: { blocked: false, sanitizedInput: raw.trim() } }];
-```
-
-### C. Tool 6 Output Schema Validation
-
-Before Bessie receives Tool 6's output and writes a response, validate the schema to catch corrupt or incomplete computation results.
-
-```javascript
-// Code node: Validate Tool 6 Output (runs inside Tool 6 Format Output, or as a separate pre-delivery check)
-const result = JSON.parse($input.first().json.output || '{}');
-
-const errors = [];
-
-if (!result.success) errors.push('Tool 6 reported failure: ' + (result.message || 'unknown'));
-if (!result.keyFindings) errors.push('Missing keyFindings');
-if (result.keyFindings) {
-  if (typeof result.keyFindings.ytdRevenue !== 'number') errors.push('ytdRevenue is not a number');
-  if (typeof result.keyFindings.ytdNOI !== 'number') errors.push('ytdNOI is not a number');
-  if (result.keyFindings.ytdNOIMargin < -1 || result.keyFindings.ytdNOIMargin > 1)
-    errors.push(`NOI margin ${result.keyFindings.ytdNOIMargin} is outside plausible range [-1, 1]`);
-  if (!result.keyFindings.fullYearRevenueBaseline)
-    errors.push('Missing fullYearRevenueBaseline');
-}
-if (!result.fileName) errors.push('Missing fileName');
-if (!result.driveLink) errors.push('Missing driveLink');
-
-if (errors.length > 0) {
-  return [{ json: {
-    valid: false,
-    errors,
-    message: `Forecast output failed validation: ${errors.join('; ')}`
-  }}];
-}
-return [{ json: { valid: true, ...result } }];
-```
-
-### D. Audit Logging
-
-Every forecast run must produce an immutable audit log entry.
-
-**Storage:** Google Sheet (`Bessie_Audit_Log`) — accessible to non-developers, easy to query.
-
-**Log schema:**
-
-| Column | Description |
-|---|---|
-| `run_id` | UUID — unique per forecast execution |
-| `timestamp` | ISO 8601 |
-| `user_id` | Telegram/chat user identifier |
-| `property_code` | e.g. prop01 |
-| `period` | e.g. 2026-Q4 |
-| `fiscal_year` | e.g. FY2026 |
-| `actuals_months_available` | Number of actual months read from file |
-| `files_found` | Comma-separated: actuals, budget, actuals_py, rent_roll |
-| `schema_valid` | true/false |
-| `qa_result` | PASS / FAIL / ESCALATED (Phase 3) |
-| `qa_issues` | Pipe-separated list of QA failures if any |
-| `confidence_score` | 0.0–1.0 (Phase 3) |
-| `output_file` | Drive link to generated workbook |
-| `tokens_used` | Approximate Claude token consumption |
-| `error_message` | If run failed |
-| `run_duration_s` | Total execution time in seconds |
-
-**n8n implementation:** Add a Google Sheets "Append Row" node as the final step in Tool 6's Format Output chain, writing one row per run. This runs regardless of success or failure (use "Always Output Data" + "On Error: Continue").
-
-### E. Secrets Management
-
-Current state: API keys and credentials stored in n8n's credential store and Docker env vars.
-
-**Best practices for the current stack:**
-
-| Secret | Current location | Recommendation |
-|---|---|---|
-| Anthropic API key | n8n credential store | ✅ Keep as-is — n8n encrypts at rest |
-| Google Drive OAuth2 | n8n credential store | ✅ Keep as-is |
-| SerpAPI key | n8n credential store | ✅ Keep as-is |
-| Allowed user IDs | Not yet implemented | Add as `BESSIE_ALLOWED_USERS` Docker env var |
-| Qdrant API key (Phase 2) | TBD | Add as Docker env var, reference as `process.env.QDRANT_API_KEY` |
-
-**Rules:**
-- Never hardcode API keys in Code nodes — always use `process.env.VAR_NAME`
-- Rotate the Google Drive OAuth token immediately if a "universal not-found" error occurs across all branches simultaneously (known expiry symptom)
-- Add `N8N_ENCRYPTION_KEY` to Docker env if not already set — this encrypts stored credentials at rest
-
-### F. Prompt Hardening (System Prompt v7 additions)
-
-Add these sections to the system prompt immediately after the current rules:
-
-```
-## ANTI-HALLUCINATION RULES — NON-NEGOTIABLE
-
-1. NEVER invent a dollar amount. Every number in your response must come from Tool 6's keyFindings output or a Yardi GL row. If a number isn't in Tool 6's output, say "data not available" — never estimate.
-
-2. NEVER compute arithmetic. If you need a sum, ratio, or comparison not already in keyFindings, say "this calculation is not available in this run" rather than computing it yourself.
-
-3. NEVER reference a property, GL code, or account name not returned by Tool 6. Do not complete or guess names — use only what Tool 6 returned.
-
-4. ALWAYS cite sources. Every claim must end with a source tag:
-   - [Yardi actuals GL XXXXX]
-   - [Tool 6 keyFindings]
-   - [RAG: document name, section] (Phase 2)
-   - [System assumption: rule name]
-
-5. IF Tool 6 reports a data quality warning (dataQuality.warningFlags), disclose this to the user BEFORE presenting results.
-
-6. IF you are uncertain about a figure, say so explicitly. "I cannot confirm this from the available data" is always the right answer when in doubt.
-```
-
-### G. Version Control & Change Management
-
-| Artifact | Version control approach |
-|---|---|
-| System prompts | GitHub `/docs/system-prompt.md` — all changes via PR |
-| Code nodes | GitHub `/code/*.js` — versioned, committed after each tested change |
-| n8n workflows | Export JSON after each stable release → GitHub `/workflows/` |
-| RAG documents (Phase 2) | Google Drive with version suffix (e.g. `v1`, `v2`) in filename |
-| Audit logs | Google Sheets — append-only, never delete rows |
+| Switch node on intent | Switch control |
+| Haiku HTTP call | HTTP action → Azure OpenAI/Anthropic API (or AI Builder prompt) |
+| Entity validation Code node | Office Script or PA expression |
 
 ---
 
-# PHASE 2 — RAG Knowledge Pipeline
+# 5. Financial Data Layer
 
-## 2.1 Objective
+## 5.1 Current State
 
-Give Bessie access to your organization's institutional knowledge — forecasting SOPs, GL-specific guidance, accounting policies, historical commentary — without bloating the system prompt or requiring code changes when knowledge is updated. Business users should be able to update knowledge by editing a Google Doc, with changes flowing automatically into Bessie's reasoning.
+- **Source of truth:** Yardi Voyager exports, manually uploaded to Google Drive
+- **Access:** OAuth2 via n8n Google Drive nodes
+- **Files per property:** `{prop}_actuals.xlsx`, `{prop}_actuals_py.xlsx`, `{prop}_budget.xlsx`, `{prop}_rent_roll.xlsx`
+- **Dynamic period detection:** header-scan of month labels; never hardcoded column positions (see workflow-design.md → "Source File Column Mapping")
 
-## 2.2 Why RAG Reduces Hallucinations
+## 5.2 Design Principles
 
-Without RAG, when Bessie encounters a question requiring business context (e.g. "why does GL 41200 Free Rent spike in Q1?"), she has two bad options: make something up, or say she doesn't know. With RAG, she retrieves the organization's actual explanation from your documented knowledge base and cites it. This is the most impactful single change for reducing hallucinations on domain-specific questions.
-
-## 2.3 Architecture Decision: What RAG Covers
-
-RAG handles **business knowledge and reasoning context**. It does NOT handle financial data (that stays in Yardi/Google Drive). This separation is critical:
-
-| Layer | Managed by | RAG? |
-|---|---|---|
-| Raw financial data (actuals, budgets) | Yardi → Google Drive → Tool 6 | ❌ No |
-| Calculated results (NOI, variances) | Tool 6 deterministic code | ❌ No |
-| Business rules (how to forecast GL X) | RAG knowledge base | ✅ Yes |
-| FP&A methodology (trailing avg logic) | RAG knowledge base | ✅ Yes |
-| Historical commentary ("Q2 spike was due to...") | RAG knowledge base | ✅ Yes |
-| Market benchmarks (CMHC) | HTTP Request Tool + RAG | ✅ Partial |
-
-## 2.4 Knowledge Architecture
-
-### Folder Structure (Google Drive)
-
-```
-Bessie Knowledge Base/
-  ├── 01_Forecasting/
-  │     ├── Forecast_Methodology_v1.md
-  │     ├── Forecast_Business_Rules_v1.md
-  │     ├── GL_Forecasting_Guide_v1.md          ← per-GL instructions
-  │     └── Trailing_Average_Logic_v1.md
-  ├── 02_Budgeting/
-  │     ├── Budget_Assumptions_FY2026_v1.md
-  │     ├── Budget_Methodology_v1.md
-  │     └── Budget_Review_Process_v1.md
-  ├── 03_Accounting_Policies/
-  │     ├── Revenue_Recognition_Policy_v1.md
-  │     ├── Accrual_Policy_v1.md
-  │     └── Capitalization_Policy_v1.md
-  ├── 04_KPIs_and_Metrics/
-  │     ├── KPI_Definitions_v1.md
-  │     ├── Materiality_Thresholds_v1.md
-  │     └── NOI_Calculation_Standard_v1.md
-  ├── 05_Property_Management/
-  │     ├── Property_Management_Glossary_v1.md
-  │     ├── Yardi_GL_Chart_of_Accounts_v1.md
-  │     └── Lease_Charge_Codes_v1.md
-  ├── 06_Variance_Analysis/
-  │     ├── Variance_Analysis_Methodology_v1.md
-  │     ├── Commentary_Style_Guide_v1.md
-  │     └── Materiality_Decision_Framework_v1.md
-  ├── 07_Historical_Commentary/
-  │     ├── FY2025_Q4_Commentary_prop01.md
-  │     └── [property]_[period]_Commentary.md    ← one per period
-  ├── 08_Approval_Workflows/
-  │     ├── Forecast_Approval_Process_v1.md
-  │     └── Budget_Sign_Off_Matrix_v1.md
-  └── 09_Lessons_Learned/
-        ├── Bessie_Decision_Log.md
-        └── Bessie_Lessons_Learned.md
-```
-
-### Metadata Standards
-
-Every document must have a YAML frontmatter block:
-
-```yaml
----
-document_type: forecasting_methodology   # see taxonomy below
-version: 1
-status: active                           # active | draft | deprecated
-owner: FP&A Team
-last_reviewed: 2026-07-01
-applicable_properties: all              # or: prop01, prop02
-applicable_gl_codes: 41100, 41110       # or: all
-fiscal_year: FY2026                     # or: all
-tags: [rent_revenue, vacancy, forecasting]
----
-```
-
-**Document type taxonomy:**
-`forecasting_methodology | budgeting_methodology | accounting_policy | kpi_definition | gl_guidance | materiality | commentary_template | approval_workflow | property_procedure | historical_commentary | lessons_learned`
-
-### Versioning Strategy
-
-- Files named with `_v1`, `_v2` etc.
-- When a document is superseded, update `status: deprecated` in the old version and create a new version
-- Never delete — the ingestion pipeline filters out `status: deprecated` automatically
-- Quarterly review cycle: each document reviewed, version bumped if updated
-
-## 2.5 Technical Architecture
-
-### Infrastructure Required
-
-| Component | Recommendation | Rationale |
-|---|---|---|
-| Vector database | **Qdrant Cloud** (managed, free tier) | Avoids self-hosting complexity; n8n has native integration; free tier is sufficient for < 1M vectors |
-| Embedding model | **OpenAI `text-embedding-3-small`** | Cost-effective ($0.02/1M tokens), high quality, well-supported in n8n |
-| Document store | Google Drive (existing) | No new storage infrastructure; business users already know it |
-| Ingestion trigger | n8n scheduled workflow (daily) | Simple; catches all new/updated docs overnight |
-
-### Qdrant Collection Design
-
-One collection: `bessie_knowledge`
+1. **The data layer returns raw + normalized data only.** No business rules, no calculations, no formatting. It answers: "give me the actuals for prop01" — nothing more.
+2. **Config-driven file resolution.** File naming patterns, folder IDs, and property registry live in the Config Registry (Shared Services) — not in Search node queries. Adding prop08 = one config row, zero workflow edits.
+3. **Uniform envelope.** Every data-layer response uses the same schema:
 
 ```json
 {
-  "collection_name": "bessie_knowledge",
-  "vectors": {
-    "size": 1536,
-    "distance": "Cosine"
-  },
-  "payload_schema": {
-    "document_type": "keyword",
-    "applicable_properties": "keyword",
-    "applicable_gl_codes": "keyword",
-    "fiscal_year": "keyword",
-    "status": "keyword",
-    "version": "integer",
-    "source_file": "text",
-    "chunk_index": "integer",
-    "last_reviewed": "keyword"
-  }
+  "success": true,
+  "source": "gdrive|ydc|sharepoint",
+  "fileType": "actuals",
+  "propertyCode": "prop01",
+  "retrievedAt": "2026-07-01T14:00:00Z",
+  "periodArrays": { "actualsMonths": [], "forecastMonths": [], "trailingAvgMonths": [] },
+  "data": [],
+  "warnings": []
 }
 ```
 
-### Chunking Strategy
+## 5.3 Property & Entity Registry (Config-Driven)
 
-**Rule: one concept per chunk.** The goal is for each retrieved chunk to answer a specific question, not to return half a document.
+Stored as a Google Sheet today (`Bessie_Config` → `Properties` tab), SharePoint List at migration:
 
-| Document type | Chunking approach | Chunk size | Overlap |
-|---|---|---|---|
-| SOPs / Methodology | By section heading (`##`) | ~500 tokens | 50 tokens |
-| GL Forecasting Guide | One chunk per GL code block | ~300 tokens | 0 (each GL is self-contained) |
-| Policy documents | By paragraph | ~300 tokens | 75 tokens |
-| Historical commentary | One chunk per period per property | ~400 tokens | 0 |
-| KPI definitions | One chunk per KPI | ~200 tokens | 0 |
+| propertyCode | friendlyName | yardiCode | active | fiscalYearStartMonth | folderOverride |
+|---|---|---|---|---|---|
+| prop01 | TO | dunf0045 | TRUE | 7 | |
+| prop02 | TP | (TBD) | TRUE | 7 | |
+| ... | | | | | |
 
-**Never chunk across section boundaries.** A chunk that starts mid-explanation and ends mid-context is useless for retrieval.
+Workflows read this registry at run start. **The "will this work at 10x?" test:** 70 properties = 70 rows. No workflow changes.
 
-### Ingestion Pipeline (n8n Workflow: "Bessie RAG Ingestor")
+## 5.4 Evolution Path
 
-```
-[Schedule Trigger — daily 2am]
-        ↓
-[Google Drive — List files in Knowledge Base folder recursively]
-        ↓
-[Code: Filter — only .md and .txt files, status != deprecated, modified since last run]
-        ↓
-[Loop over files]
-        ↓
-[Google Drive — Download file]
-        ↓
-[Code: Parse frontmatter + chunk document]
-        ↓
-[OpenAI Embeddings — embed each chunk]   (model: text-embedding-3-small)
-        ↓
-[Code: Build Qdrant upsert payload — chunk text + embedding + metadata]
-        ↓
-[HTTP Request — Qdrant upsert]   (DELETE old chunks for this file first, then INSERT new)
-        ↓
-[Google Sheets — Log ingestion run]   (file name, chunks created, timestamp)
-```
+| Stage | Source | Change required |
+|---|---|---|
+| Today | Google Drive (manual exports) | — |
+| Mid-term | **Yardi YDC REST API** | Replace 4 Drive branches in the data layer with 4 HTTP Request calls; envelope schema unchanged; everything downstream untouched |
+| At migration | SharePoint document library (if YDC not yet approved) | Swap Drive nodes for SharePoint connector; same envelope |
 
-Key implementation notes:
-- Store the last successful ingestion timestamp in a Google Sheet or n8n variable; only re-ingest files modified since that timestamp
-- On re-ingest: delete all existing Qdrant points for that file (filter by `source_file` metadata), then insert fresh chunks. This prevents stale/duplicate knowledge.
-- Chunk IDs: use `{file_name}_{chunk_index}` for deterministic deduplication
+**YDC integration detail (Phase 5):** YDC exposes GL detail, rent roll, and budget endpoints. Mapping: one HTTP Request per fileType, response normalized by a Code node into the same envelope. Data becomes real-time rather than export-lag dependent, and the manual upload workflow disappears. Prerequisites: Yardi subscription add-on, IT security review, service account with least-privilege API scopes.
 
-### Retrieval Strategy
-
-**Hybrid retrieval (recommended):** Combine semantic (vector) search with metadata filtering for precision.
-
-When a forecast request comes in for `prop01`, the retrieval query should filter by:
-- `applicable_properties IN [prop01, all]`
-- `status = active`
-- Optional: `applicable_gl_codes` if the query mentions specific GLs
-- Optional: `fiscal_year IN [FY2026, all]`
-
-This ensures Bessie doesn't retrieve general guidance when property-specific guidance exists.
-
-**Top-K:** Retrieve top 5 chunks per query (3 for general methodology, 2 for property/GL-specific). More than 5 chunks risks context bloat and distraction; fewer than 3 risks missing relevant guidance.
-
-### RAG Integration with Bessie's Reasoning
-
-RAG context is injected into the AI Agent's system prompt **dynamically at request time**. The retrieval happens in a pre-processing step before the AI Agent node:
-
-```
-[Chat Trigger]
-        ↓
-[Code: Extract query intent — property, period, GL codes mentioned]
-        ↓
-[HTTP Request — Qdrant search with metadata filters]
-        ↓
-[Code: Format retrieved chunks as context block]
-        ↓
-[Set node: inject context into system prompt expression]
-        ↓
-[AI Agent — system message now includes retrieved context]
-```
-
-The injected context block looks like:
-
-```
-## Retrieved Knowledge Context (from organizational knowledge base)
-
-### [GL 41110 Vacancy — Forecasting Guidance]
-Source: GL_Forecasting_Guide_v1.md, Section 2.3
 ---
-Vacancy (GL 41110) is forecasted using a -10% adjustment to the trailing
-3-month average in the Baseline scenario. This reflects the seasonal
-improvement pattern observed in Toronto multifamily markets from Apr–Jun.
-The Upside scenario assumes -27% (near-full occupancy target of 96.5%).
-The Downside scenario assumes +27% (reflects risk of above-market vacancy
-if 1–2 units come off-lease without immediate re-let)...
 
-### [Commentary Style Guide — Variance Explanation Standards]
-Source: Commentary_Style_Guide_v1.md, Section 1
----
-All material variances (>5% or >$10,000) must be explained with:
-1. The root cause (not a restatement of the number)
-2. Whether the variance is expected to continue in forecast months
-3. Any management action taken or planned...
-```
+# 6. Business Rules Engine
 
-This means:
-- Bessie's commentary will reference real documented methodologies
-- If a methodology changes (e.g. vacancy assumption updated to -15%), update one document in Drive — no prompt changes needed
-- Every RAG-sourced claim can be traced to its source document
+## 6.1 Purpose
 
-### Token Budget for RAG Context
+Centralize every forecasting/budgeting rule that is currently embedded in code or prompts into a **configuration-driven rules store**, so that:
+- FP&A staff can change a materiality threshold without a developer
+- Rules are versioned, auditable, and effective-dated
+- The same rule set drives compute, QA validation, and AI commentary consistently
+- Migration = moving config tables, not re-encoding logic
 
-The RAG context injection must be managed to stay within the 4,000 max_tokens budget:
+## 6.2 Storage
 
-| Component | Estimated tokens |
+**Today:** Google Sheet `Bessie_Config` with one tab per rule family (readable by n8n Google Sheets node, cached by Shared Services for 15 min).
+**Future:** SharePoint Lists (1:1 tab-to-list mapping) or Dataverse tables.
+
+## 6.3 Rule Families
+
+### RF-1: Period Rules
+| Key | Value | Notes |
+|---|---|---|
+| fiscalYearStartMonth | 7 | July |
+| quarterMap | Q1=Jul-Sep; Q2=Oct-Dec; Q3=Jan-Mar; Q4=Apr-Jun | |
+| actualsDetection | header_scan_primary, date_arithmetic_fallback | |
+| trailingAvgWindow | 3 | months |
+| budgetVsActualBoundary | derived_from_file | never hardcoded |
+
+### RF-2: Scenario Adjustment Rules (per GL, per scenario)
+| glCode | glName | baselinePct | upsidePct | downsidePct | basis | effectiveFrom | effectiveTo |
+|---|---|---|---|---|---|---|---|
+| 41100 | Rent Revenue | 0.000 | 0.005 | -0.010 | Trailing 3-mo avg | 2025-07-01 | |
+| 41110 | Vacancy | -0.100 | -0.270 | 0.270 | Trailing 3-mo avg | 2025-07-01 | |
+| 41200 | Free Rent | 0.000 | -0.100 | 0.150 | Trailing 3-mo avg | 2025-07-01 | |
+| 89290 | Realty Tax | 0.000 | 0.000 | 0.000 | Fixed — assessed | 2025-07-01 | |
+| 89390 | Mgmt Fee | 0.000 | 0.000 | 0.000 | Self-adjusting w/ revenue | 2025-07-01 | |
+| ... | | | | | | | |
+
+**Effective dating** allows rules to change between fiscal years with full history retained — the compute layer selects rules where `effectiveFrom <= runDate < effectiveTo`.
+
+### RF-3: Override Rules
+| Key | Value |
 |---|---|
-| System prompt (v6 with governance rules) | ~600 |
-| RAG context (5 chunks × ~150 tokens avg) | ~750 |
-| Tool 6 keyFindings output | ~800 |
-| Conversation history (10 messages) | ~1,200 |
-| **Total** | **~3,350** |
-| **Remaining for response** | **~650** |
+| overrideMechanism | GL-keyed COUNTIFS/SUMIFS in workbook Overrides tab |
+| overridePrecedence | Manual override > scenario formula |
+| overrideAudit | Overrides detected at QA time are listed in run log |
 
-If context exceeds budget: prioritize property-specific chunks over general ones; drop lowest-relevance chunks first.
+### RF-4: GL Validation Rules
+| Key | Value |
+|---|---|
+| anchorGLs | 45990 (Total Rev), 90000 (Total OpEx), 90010 (NOI) |
+| requiredGLs | anchorGLs + 41100 |
+| glCodeFormat | 5-digit numeric |
+| unknownGLPolicy | flag_and_continue (never invent) |
+| kpiSource | anchor_gl_only (never category summation — see CLAUDE.md bug #2) |
 
----
-
-# PHASE 3 — QA Review Agent
-
-## 3.1 Objective
-
-Before Bessie's forecast and commentary reach the user, a separate independent review process validates the output for mathematical correctness, business rule compliance, and commentary accuracy. This is the final trust layer before delivery.
-
-## 3.2 Architecture: Deterministic First, LLM Second
-
-**The QA agent is mostly deterministic.** Roughly 80% of validation should be Code nodes performing math checks, schema checks, and rule enforcement. Only 20% should involve an LLM call (for commentary alignment and assumption reasonableness checks that require language understanding).
-
-This keeps QA fast, cheap, and reliable. An LLM-based QA agent that re-reads everything would be slow and expensive, and could hallucinate its own false positives.
-
-## 3.3 Validation Checks
-
-### Tier 1 — Deterministic Checks (Code node, no LLM)
-
-These checks never fail due to LLM misinterpretation. They are binary pass/fail.
-
-**Math reconciliation:**
-```javascript
-// YTD Revenue check: sum of monthly actuals should equal ytd_total
-const actuals41100 = forecastData.actuals.find(r => r.gl_code === '45990');
-const monthlySum = actualsMonths.reduce((sum, mk) => sum + (actuals41100[mk] || 0), 0);
-const ytdReported = actuals41100.ytd_total;
-const tolerance = Math.abs(ytdReported) * 0.001; // 0.1% tolerance for rounding
-if (Math.abs(monthlySum - ytdReported) > tolerance) {
-  issues.push(`FAIL: GL 45990 ytd_total ${ytdReported} does not match sum of monthly actuals ${monthlySum}`);
-}
-```
-
-**Period integrity:**
-```javascript
-// Forecast months must all be in the future relative to actuals
-const lastActualMonth = new Date(forecastData.actualsMonths.slice(-1)[0]);
-for (const fm of forecastData.forecastMonths) {
-  if (new Date(fm) <= lastActualMonth) {
-    issues.push(`FAIL: Forecast month ${fm} is not after last actual month ${forecastData.actualsMonths.slice(-1)[0]}`);
-  }
-}
-```
-
-**Scenario consistency:**
-```javascript
-// Upside NOI must be >= Baseline NOI >= Downside NOI
-const noiBL = keyFindings.fullYearNOIBaseline;
-const noiUp = forecastData.upside.find(r => r.gl_code === '90010')?.forecast_total || 0;
-const noiDn = forecastData.downside.find(r => r.gl_code === '90010')?.forecast_total || 0;
-if (!(noiDn <= noiBL && noiBL <= noiUp)) {
-  issues.push(`WARN: Scenario ordering unexpected — Downside NOI ${noiDn} / Baseline ${noiBL} / Upside ${noiUp}`);
-}
-```
-
-**Data completeness:**
-```javascript
-// Check all 4 expected anchor GLs are present in actuals
-const required = ['45990', '90000', '90010'];
-for (const gl of required) {
-  if (!forecastData.actuals.find(r => r.gl_code === gl)) {
-    issues.push(`FAIL: Required anchor GL ${gl} missing from actuals`);
-  }
-}
-// Check actuals count matches dataQuality field
-if (forecastData.actualsMonths.length !== forecastData.dataQuality.actualsMonthsAvailable) {
-  issues.push(`FAIL: actualsMonths length ${forecastData.actualsMonths.length} ≠ dataQuality.actualsMonthsAvailable ${forecastData.dataQuality.actualsMonthsAvailable}`);
-}
-```
-
-**Confidence score computation (deterministic):**
-```javascript
-const totalChecks = deterministicChecks.length;
-const passed = deterministicChecks.filter(c => c.result === 'PASS').length;
-const warnings = deterministicChecks.filter(c => c.result === 'WARN').length;
-const confidenceScore = (passed + (warnings * 0.5)) / totalChecks;
-// < 0.7 = FAIL, 0.7–0.9 = REVIEW, > 0.9 = PASS
-```
-
-### Tier 2 — LLM Review (Claude, separate call)
-
-Only invoked if Tier 1 passes. Asks a narrow set of structured questions to avoid open-ended hallucination risk.
-
-**System prompt for Review Agent:**
-```
-You are a financial QA reviewer for a real estate FP&A system. You will be given:
-1. A structured forecast output (keyFindings JSON)
-2. The commentary text Bessie produced
-3. A set of yes/no validation questions
-
-Answer each question with EXACTLY: PASS, FAIL, or UNCERTAIN.
-For FAIL and UNCERTAIN answers, provide a single sentence of explanation.
-Do not add commentary beyond what is asked. Do not compute new figures.
-```
-
-**Validation questions passed to Review Agent LLM:**
-1. Does the commentary's YTD Revenue figure match `keyFindings.ytdRevenue`? [PASS/FAIL]
-2. Does the commentary's NOI Margin match `keyFindings.ytdNOIMargin`? [PASS/FAIL]
-3. Does the top favourable variance cited in commentary match `keyFindings.topFavourableVariances[0]`? [PASS/FAIL]
-4. Are all numeric claims in the commentary supported by keyFindings data? [PASS/FAIL/UNCERTAIN]
-5. Does the commentary avoid making estimates or calculations not present in keyFindings? [PASS/FAIL]
-6. Is the tone consistent with a professional FP&A report (not conversational or speculative)? [PASS/FAIL]
-
-## 3.4 Review Agent n8n Workflow
-
-```
-[Input: Tool 6 output + Bessie's draft commentary]
-        ↓
-[Code: Tier 1 Deterministic Checks]
-        ↓
-[IF: All critical checks PASS?]
-   ↙ No                      ↘ Yes
-[Code: Classify failure]    [HTTP: Claude API — Tier 2 LLM Review]
-   ↓                              ↓
-[Is it auto-correctable?]   [Code: Parse LLM review response]
-   ↙ Yes      ↘ No                ↓
-[Retry Tool 6]  [Escalate]  [IF: All LLM checks PASS?]
-(max 2 retries)                ↙ No           ↘ Yes
-                         [Escalate]       [Compute final
-                                          confidence score]
-                                               ↓
-                                         [IF: score >= 0.85?]
-                                            ↙ No    ↘ Yes
-                                      [Human     [DELIVER
-                                       Review]    to user]
-```
-
-### Feedback Loop on Failure
-
-When a check fails and is auto-correctable:
-- The retry sends Tool 6's output back through the computation with a correction hint
-- Maximum 2 retry attempts before escalating to human review
-- The correction hint is injected as an additional constraint: `"Previous run failed: [issue]. Ensure [specific rule] is applied in this run."`
-
-### Escalation Path
-
-When a check fails and is NOT auto-correctable (e.g. source data missing, math doesn't reconcile):
-1. Notify user: "This forecast requires human review before delivery — [reason]"
-2. Log in audit sheet with `qa_result = ESCALATED`
-3. Optionally: send Telegram notification to designated reviewer
-
-## 3.5 Confidence Score Tiers
-
-| Score | Status | Action |
+### RF-5: Materiality Thresholds
+| Metric | Threshold | Action |
 |---|---|---|
-| ≥ 0.90 | ✅ HIGH CONFIDENCE | Auto-deliver |
-| 0.75–0.89 | ⚠️ MEDIUM CONFIDENCE | Deliver with disclaimer: "This forecast has not been manually reviewed" |
-| 0.60–0.74 | ⚠️ LOW CONFIDENCE | Deliver with strong warning + flag for human review |
-| < 0.60 | ❌ FAIL | Do not deliver; escalate to human reviewer |
+| Variance % (line item) | > 5% | Commentary required |
+| Variance $ (line item) | > $10,000 | Commentary required |
+| NOI margin plausible range | 0.30 – 0.85 | Outside → QA WARN |
+| Month-over-month revenue swing | > 15% | QA WARN + commentary required |
 
----
+### RF-6: Workbook Integrity Rules
+| Key | Value |
+|---|---|
+| templateFile | Quarterly_Forecast_Template.xlsx (config: templateFolderId) |
+| requiredTabs | Forecast, Overrides, Assumptions, Key Findings, _PY_Data |
+| glLookupKey | Column A (never row position) |
+| pyDataAlignment | Forecast-tab row number |
+| staleDataPolicy | clear_unmatched_gls_to_zero |
 
-# Implementation Roadmap
-
-## Phase 1 — Security & Governance (Weeks 1–3, Do These First)
-
-| Week | Task | Priority | Complexity |
+### RF-7: Approval Workflow Rules
+| Trigger | Approver | Mechanism (today) | Mechanism (future) |
 |---|---|---|---|
-| 1 | Telegram user ID whitelist | 🔴 Critical | Low |
-| 1 | Input sanitization node | 🔴 Critical | Low |
-| 1 | Tool 6 output schema validation | 🔴 Critical | Medium |
-| 1 | Prompt v7 anti-hallucination rules | 🔴 Critical | Low |
-| 2 | Audit log — Google Sheets | 🟡 High | Low |
-| 2 | Secrets inventory — document all credentials | 🟡 High | Low |
-| 2 | n8n encryption key set in Docker | 🟡 High | Low |
-| 3 | End-to-end governance test run | Required | — |
-| 3 | Update GitHub docs | Required | — |
+| QA confidence < 0.75 | FP&A reviewer | n8n Chat notification + audit flag | Teams Approval / PA Approvals |
+| Budget publish | Controller | Manual | PA Approvals flow |
+| Rule change in RF-2/RF-5 | FP&A lead | Google Sheet edit history | SharePoint list versioning + approval |
 
-## Phase 2 — RAG Knowledge Pipeline (Weeks 4–9)
-
-| Week | Task | Priority | Complexity |
-|---|---|---|---|
-| 4 | Write 5 highest-priority knowledge docs (Forecast Methodology, GL Guide, Variance Methodology, Commentary Style, KPI Definitions) | 🔴 Critical | Medium |
-| 4 | Set up Qdrant Cloud account + collection | 🔴 Critical | Low |
-| 4 | Add OpenAI API credential to n8n | 🔴 Critical | Low |
-| 5 | Build RAG Ingestor workflow (n8n) | 🔴 Critical | High |
-| 5 | Ingest first 5 documents, validate retrieval quality | 🔴 Critical | Medium |
-| 6 | Build retrieval pre-processing step in Bessie chat flow | 🟡 High | Medium |
-| 6 | Update system prompt v7 to consume RAG context block | 🟡 High | Low |
-| 7 | Write remaining priority documents (all 09 folders) | 🟡 High | Medium |
-| 7 | Tune retrieval (top-K, metadata filters, relevance threshold) | 🟡 High | Medium |
-| 8 | RAG re-ingestion testing (update a doc, verify change propagates) | Required | Low |
-| 9 | End-to-end RAG test + update GitHub docs | Required | — |
-
-## Phase 3 — QA Review Agent (Weeks 10–13)
-
-| Week | Task | Priority | Complexity |
-|---|---|---|---|
-| 10 | Build Tier 1 deterministic checks Code node | 🔴 Critical | Medium |
-| 10 | Build confidence score computation | 🟡 High | Low |
-| 11 | Build Tier 2 LLM Review call (Claude, structured questions) | 🟡 High | Medium |
-| 11 | Build delivery gate (IF node on confidence score) | 🟡 High | Low |
-| 12 | Build retry/feedback loop (max 2 retries) | 🟡 High | High |
-| 12 | Build escalation path + Telegram notification | 🟡 High | Medium |
-| 12 | Integrate Review Agent as Tool 7 in Bessie | 🟡 High | Medium |
-| 13 | End-to-end QA test across multiple properties/periods | Required | — |
-| 13 | Update GitHub docs + audit log schema update | Required | — |
-
----
-
-# Risks, Trade-Offs & Best Practices
-
-## Phase 1 Risks
-
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| Whitelist env var too strict — locks out legitimate users | Medium | Medium | Keep whitelist in Google Sheet for easy non-developer updates |
-| Schema validation too strict — blocks valid edge-case outputs | Low | High | Log validation failures for first 2 weeks before hard-blocking |
-| Audit log Google Sheet hits row limit (10M rows) | Very Low | Low | Archive annually to new sheet |
-
-## Phase 2 Risks
-
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| Knowledge docs are stale/wrong — RAG makes Bessie more confidently wrong | Medium | High | Quarterly review cycle; every doc has `last_reviewed` date; flag docs > 6 months old |
-| Retrieval returns irrelevant chunks — context pollution | Medium | Medium | Filter by `applicable_properties` and `status=active`; tune relevance threshold |
-| OpenAI embedding cost spikes | Low | Low | text-embedding-3-small is ~$0.002 per full re-ingest of 50 docs; negligible |
-| Qdrant Cloud free tier insufficient | Low | Low | Free tier supports 1GB / 1M vectors; easily sufficient for years |
-
-## Phase 3 Risks
-
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| Retry loop causes runaway costs | Low | Medium | Hard cap: max 2 retries per run; retry logged to audit sheet |
-| LLM Review Agent hallucinates false positives | Medium | Medium | Narrow structured questions reduce surface area; Tier 1 deterministic checks carry more weight |
-| Confidence threshold too high — too many escalations | Medium | Low | Start at 0.75 threshold, tune upward after 20+ production runs |
-
-## Best Practices Summary
-
-1. **Build Phase 1 before any real-property forecasts.** Governance is not optional for financial data.
-2. **Start RAG with 5 high-quality documents, not 50 mediocre ones.** Quality of knowledge matters more than quantity.
-3. **The QA agent's Tier 1 checks are the most valuable thing in Phase 3.** Even without the LLM review layer, deterministic math checks alone prevent the most damaging failures.
-4. **Version everything.** System prompts, knowledge docs, n8n workflows — all in GitHub with commit messages explaining why a change was made.
-5. **Never trust a confidence score you haven't tested.** Run the QA agent against 10 known-good and 5 known-bad outputs before deploying to production.
-
----
-
-# Future Scalability
-
-## Power Automate Migration
-
-| Capability | n8n today | Power Automate future |
-|---|---|---|
-| Excel formatting (CF, dropdowns) | ❌ SheetJS limitation | ✅ Office Scripts + Excel Online |
-| SharePoint document store | ❌ Not available | ✅ Native |
-| Teams notifications | ❌ Requires custom webhook | ✅ Native connector |
-| Approval workflows (Power Automate Approvals) | ❌ Manual escalation | ✅ Native approval flows |
-| Audit logging | Google Sheets | SharePoint List or Dataverse |
-
-Migration recommendation: migrate the Excel generation step first (highest value), then the document store (enables SharePoint-native RAG), then the approval workflows.
-
-## Yardi YDC Integration (Direct API)
-
-Currently Bessie reads Yardi data via manually exported Excel files in Google Drive. Direct YDC integration eliminates the manual export step:
-
-- Yardi Data Connect (YDC) provides REST APIs for GL data, rent roll, and budgets
-- n8n can call YDC APIs directly via HTTP Request node
-- Replace the 4 Google Drive file-reading branches in Tool 6 with 4 YDC API calls
-- This enables real-time data (not export-lag dependent) and eliminates the manual upload workflow
-
-**Pre-requisite:** YDC requires a Yardi subscription add-on and IT approval. Plan this as a Phase 4 item.
-
-## Multi-Property Batch Mode
-
-Currently Bessie runs one property at a time (chat-driven). A scheduled batch workflow can loop over all 7 properties:
+## 6.4 Rules Engine Access Pattern
 
 ```
-[Schedule Trigger — quarterly]
-        ↓
-[Code: Load property list from config]
-        ↓
-[Loop over properties]
-        ↓
-[Call Tool 6 for each property]
-        ↓ (after all complete)
-[Call Tool 7 QA for each output]
-        ↓
-[Aggregate summary report → email/Teams]
+[Capability workflow starts]
+      ↓
+[Shared Services: getRules(ruleFamilies[], context{property, runDate})]
+      ↓  (cache hit? return cached — 15 min TTL)
+[Google Sheets read → filter by effective dates + property scope]
+      ↓
+[Return rules[] to compute layer AND to QA layer]  ← same rules, both places
 ```
 
-This requires no changes to Tool 6 or the QA agent — just a wrapper loop.
+**Critical consistency property:** compute and QA read the SAME resolved rule set from the SAME run context. QA never re-derives rules independently — this prevents "compute used the new threshold, QA validated against the old one" drift.
 
 ---
 
-# GitHub Repository Updates Required
+# 7. Deterministic Compute Layer
 
-| File | Action | Notes |
+## 7.1 Principle (Non-Negotiable)
+
+> **AI explains. Code calculates.** No LLM ever produces, transforms, or adjusts a financial figure. Every number a user sees was computed by versioned JavaScript executing in a Code node (or, post-migration, an Office Script), from source data, under config-driven rules, with recorded lineage.
+
+## 7.2 Compute Modules (current + planned)
+
+| Module | Status | Function |
 |---|---|---|
-| `/docs/bessie-enterprise-roadmap.md` | **NEW** | This document |
-| `/docs/system-prompt.md` | **UPDATE** | Add Phase 1 anti-hallucination rules |
-| `/docs/rag-architecture.md` | **NEW** | RAG design detail (separate doc) |
-| `/docs/qa-review-agent.md` | **NEW** | Phase 3 design detail |
-| `/code/auth-user.js` | **NEW** | Phase 1 user whitelist check |
-| `/code/sanitize-input.js` | **NEW** | Phase 1 input sanitization |
-| `/code/validate-tool6-output.js` | **NEW** | Phase 1 schema validation |
-| `/code/audit-log.js` | **NEW** | Phase 1 audit log formatter |
-| `/code/rag-ingestor.js` | **NEW** | Phase 2 document chunker |
-| `/code/rag-retrieval.js` | **NEW** | Phase 2 query + context builder |
-| `/code/qa-tier1-checks.js` | **NEW** | Phase 3 deterministic validation |
-| `/code/qa-confidence-score.js` | **NEW** | Phase 3 confidence scorer |
-| `/CLAUDE.md` | **UPDATE** | Add Phase 1–3 summary sections |
-| `/docs/workflow-design.md` | **UPDATE** | Add Tool 7 (QA) and RAG pre-processing nodes |
+| `compute-financials-v4.js` | ✅ Live | 3-scenario forecast, KPI derivation from anchor GLs, period auto-derivation from file headers |
+| `generate-excel-workbook-dynamic.js` | ✅ Live | Template population (any quarter), formula generation per forecast column, stale-data clearing |
+| `variance-calc.js` | 🔜 Phase 2 | Budget-vs-actual and forecast-vs-budget variance with materiality tagging from RF-5 |
+| `budget-build.js` | 🔜 Phase 3 | Driver-based budget construction from prior actuals + RF-2 rules |
+| `consolidate.js` | 🔜 Phase 4 | Multi-property portfolio rollup |
+
+## 7.3 Lineage Object
+
+Every compute run emits a lineage record alongside results:
+
+```json
+{
+  "runId": "uuid",
+  "module": "compute-financials-v4",
+  "moduleVersion": "4.1",
+  "inputs": {
+    "actualsFile": {"name": "prop01_actuals.xlsx", "driveId": "...", "modifiedTime": "..."},
+    "rulesApplied": ["RF-1@v3", "RF-2@v5", "RF-4@v2"]
+  },
+  "derived": {"period": "2026-Q4", "fiscalYear": "FY2026", "actualsMonths": 9},
+  "outputs": {"keyFindingsHash": "sha256:..."}
+}
+```
+
+Lineage is written to the audit log and is what makes every number in every workbook traceable to its exact inputs and rule versions.
+
+## 7.4 Migration Mapping
+
+| n8n Code node | Power Automate equivalent |
+|---|---|
+| compute-financials | Office Script (TypeScript port — logic is plain JS, ports directly) or Azure Function |
+| generate-workbook | **Office Script on live Excel file** — this is an upgrade: conditional formatting + dropdowns preserved (SheetJS limitation disappears) |
+| variance/budget/consolidate | Office Scripts or Azure Functions |
+
+Because compute modules are pure functions (data + rules in → results out, no n8n API usage inside the math), they port with minimal rework. This was a deliberate constraint.
+# 8. RAG Knowledge Layer
+
+## 8.1 Scope Boundary (Critical)
+
+RAG stores **business knowledge**, never financial data:
+
+| Content | RAG? | Lives in |
+|---|---|---|
+| Forecasting/budgeting SOPs & methodology | ✅ | Knowledge Base |
+| Per-GL forecasting guidance | ✅ | Knowledge Base |
+| Accounting policies, KPI definitions, glossary | ✅ | Knowledge Base |
+| Historical variance commentary (approved) | ✅ | Knowledge Base |
+| Approval processes, materiality frameworks | ✅ | Knowledge Base |
+| Actuals, budgets, rent rolls | ❌ | Financial Data Layer |
+| Computed KPIs, variances | ❌ | Deterministic Compute output |
+| Scenario adjustment percentages | ❌ | Business Rules Engine (RF-2) |
+
+**Why the last row matters:** adjustment percentages are *rules that drive calculations* — they must live in the Rules Engine where compute reads them deterministically. The Knowledge Base may contain the *explanation* of why the vacancy assumption is -10% (for AI commentary), but the number that actually drives the math comes only from RF-2. This prevents a stale document from silently changing a calculation.
+
+## 8.2 Two Workflows
+
+### WF-KB-Ingest — Knowledge Ingestion Pipeline
+
+```
+[Schedule Trigger — daily 02:00]  (+ manual trigger for immediate re-ingest)
+        ↓
+[Config: get knowledgeBaseFolderId, lastIngestTimestamp]     ← Shared Services
+        ↓
+[Google Drive: List files recursively]                        ← future: SharePoint "Get files"
+        ↓
+[Code: FILTER]
+   • extensions: .md, .txt, .docx (docx → extract text first)
+   • modifiedTime > lastIngestTimestamp
+   • skip files without valid frontmatter
+        ↓
+[Loop per file]
+        ↓
+[Google Drive: Download]
+        ↓
+[Code: EXTRACT + CLEAN]
+   • parse YAML frontmatter → metadata object
+   • skip if status == deprecated (and DELETE existing vectors for this file)
+   • strip HTML/formatting artifacts, normalize whitespace,
+     remove boilerplate headers/footers
+        ↓
+[Code: CHUNK]  (strategy table below — by document_type)
+        ↓
+[HTTP: OpenAI Embeddings — text-embedding-3-small, batched 20 chunks/call]
+        ↓
+[Code: BUILD PAYLOAD]
+   • point id = sha1(fileName + '_' + chunkIndex)   (deterministic → idempotent upserts)
+   • vector + full metadata payload
+        ↓
+[HTTP: Qdrant]
+   1. DELETE points where source_file == fileName   (purge stale chunks)
+   2. UPSERT new points
+        ↓
+[Shared Services: audit log ingestion run]
+   fileName, chunkCount, tokensEmbedded, duration, status
+        ↓
+[Config: update lastIngestTimestamp]
+```
+
+Failure handling: per-file try/catch — one bad document logs an error row and never blocks the rest of the batch. Retry: single automatic retry per file; persistent failure → observability alert.
+
+### WF-KB-Retrieve — Retrieval Pipeline
+
+```
+[Input: {query, entities{property, glCodes, period}, intent}]   ← from Intent Router
+        ↓
+[Shared Services: CACHE CHECK]
+   key = sha1(normalized query + filters); TTL 60 min
+   hit → return cached chunks (zero embedding cost)
+        ↓
+[HTTP: OpenAI Embeddings — embed query]
+        ↓
+[HTTP: Qdrant Search]
+   • filter: status == 'active'
+   • filter: applicable_properties CONTAINS ANY [property, 'all']
+   • filter (if glCodes present): applicable_gl_codes CONTAINS ANY [glCodes..., 'all']
+   • filter (if period present): fiscal_year IN [FY(period), 'all']
+   • limit: 8 candidates, score_threshold: 0.70
+        ↓
+[Code: RANK + TRIM]
+   • prefer property-specific over 'all' at similar scores
+   • dedupe by source_file (max 2 chunks per document)
+   • cap: 5 chunks, ~750 tokens total context budget
+        ↓
+[Code: FORMAT CONTEXT BLOCK]
+   each chunk rendered as:
+   ### [<title>] — Source: <source_file> §<section>, v<version>
+   <chunk text>
+        ↓
+[Output: {contextBlock, sources[]}]   → injected into AI Reasoning prompt
+[Shared Services: cache store + log retrieval metrics (scores, chunk ids)]
+```
+
+## 8.3 Chunking Strategy
+
+**Rule: one retrievable concept per chunk. Never chunk across section boundaries.**
+
+| document_type | Chunk unit | Target size | Overlap |
+|---|---|---|---|
+| forecasting/budgeting methodology | `##` section | ~500 tokens | 50 |
+| gl_guidance | one GL code block | ~300 tokens | 0 (self-contained) |
+| accounting_policy | paragraph group | ~300 tokens | 75 |
+| kpi_definition | one KPI | ~200 tokens | 0 |
+| historical_commentary | one property-period | ~400 tokens | 0 |
+| approval_workflow / materiality | `##` section | ~400 tokens | 50 |
+
+Chunks below 50 tokens are merged into the preceding chunk; chunks above 800 are split at sentence boundaries with 50-token overlap.
+
+## 8.4 Embedding Model
+
+**Choice: OpenAI `text-embedding-3-small` (1536-dim).**
+
+| Criterion | text-embedding-3-small | text-embedding-3-large | Voyage/other |
+|---|---|---|---|
+| Cost /1M tokens | $0.02 | $0.13 | varies |
+| Quality for domain SOP retrieval | High (sufficient) | Marginal gain | comparable |
+| n8n + PA support | Native/HTTP simple | same | extra vendor |
+
+Full KB re-ingest (~50 docs, ~100K tokens) ≈ **$0.002**. Cost is a non-factor; small is correct. Revisit only if retrieval-quality metrics (see §12) show sustained misses.
+
+## 8.5 Metadata Standards
+
+Every document begins with YAML frontmatter (ingestion rejects files without it):
+
+```yaml
+---
+document_type: gl_guidance        # taxonomy below
+version: 2
+status: active                    # active | draft | deprecated
+owner: FP&A Team
+last_reviewed: 2026-07-01
+applicable_properties: all        # or comma list: prop01,prop03
+applicable_gl_codes: 41110        # or 'all'
+fiscal_year: all                  # or FY2026
+tags: [vacancy, forecasting]
+---
+```
+
+**Taxonomy:** `forecasting_methodology | budgeting_methodology | accounting_policy | kpi_definition | gl_guidance | materiality | commentary_template | approval_workflow | property_procedure | historical_commentary | lessons_learned | glossary`
+
+All frontmatter fields are stored as Qdrant payload fields and are filterable at query time.
+
+## 8.6 Versioning & Knowledge Lifecycle
+
+```
+DRAFT ──(owner review)──▶ ACTIVE ──(superseded)──▶ DEPRECATED ──(retention)──▶ ARCHIVED
+```
+
+| Lifecycle rule | Implementation |
+|---|---|
+| New version | New file `_v{n+1}`, old file frontmatter → `status: deprecated` |
+| Deprecated handling | Ingestor deletes its vectors on next run; file retained in Drive for audit |
+| Review cadence | Quarterly; `last_reviewed` older than 2 quarters → observability flag "stale knowledge" |
+| Approval to activate | Owner sets `status: active`; (future: SharePoint approval flow gates the status change) |
+| Deletion | Never delete files; archive folder after 2 years deprecated |
+
+## 8.7 Migration Mapping
+
+| Component | Today | Future |
+|---|---|---|
+| Document store | Google Drive | SharePoint document library (metadata columns replace frontmatter, or keep frontmatter — both supported) |
+| Ingestion trigger | n8n schedule | PA scheduled cloud flow / SharePoint "file modified" trigger |
+| Vector DB | Qdrant Cloud | Qdrant Cloud (unchanged — platform-agnostic HTTPS API) or Azure AI Search if consolidation to Azure is preferred |
+| Embeddings | OpenAI API | Azure OpenAI (same model, same dims — no re-embedding needed if staying on OpenAI-family) |
+
+---
+
+# 9. AI Reasoning Layer
+
+## 9.1 Role
+
+The ONLY layer that generates natural language. It receives a fully assembled context bundle and produces commentary, explanations, and narratives. It cannot fetch data, cannot calculate, cannot invoke tools mid-generation (all tool orchestration is upstream in the capability workflow).
+
+## 9.2 Prompt Assembly (from Shared Services templates)
+
+```
+[Prompt Template: e.g. 'forecast-commentary-v2']     ← versioned in template store
+        +
+[Governance header — anti-hallucination rules]        ← shared, versioned
+        +
+[RAG context block]                                    ← from WF-KB-Retrieve
+        +
+[Computed results — keyFindings JSON]                  ← from Deterministic Compute
+        +
+[Task instruction + output schema]
+        ↓
+[HTTP: Claude Sonnet call — temp 0.2, max_tokens per template config]
+        ↓
+[Code: validate output against expected schema; strip anything non-conforming]
+```
+
+## 9.3 Model Tiering
+
+| Task | Model | Rationale |
+|---|---|---|
+| Intent classification, entity extraction | Haiku-class | Classification needs no reasoning depth |
+| Commentary, variance narrative, KB answers | Sonnet-class | Language quality + instruction-following |
+| QA Tier-2 structured review | Haiku-class first; Sonnet only if Haiku returns UNCERTAIN | Narrow yes/no questions; escalate only ambiguity |
+
+## 9.4 Anti-Hallucination Governance Header (v7 — include verbatim in every reasoning prompt)
+
+```
+## NON-NEGOTIABLE RULES
+1. NEVER produce a number that is not present verbatim in the COMPUTED RESULTS
+   or RETRIEVED KNOWLEDGE sections. If a figure is unavailable, write
+   "not available in this run".
+2. NEVER perform arithmetic — no sums, differences, ratios, or percentages
+   you compute yourself.
+3. NEVER reference a property, GL code, or account name absent from the inputs.
+4. EVERY factual claim carries a source tag:
+   [Compute: keyFindings.<field>] | [Yardi GL <code>] |
+   [KB: <source_file> §<section>] | [Rule: RF-<n>]
+5. Disclose any dataQuality.warningFlags BEFORE presenting results.
+6. When uncertain, say so. "I cannot confirm this from available data"
+   is always acceptable.
+```
+
+## 9.5 Token Budget (per forecast run, Sonnet call)
+
+| Component | Tokens |
+|---|---|
+| Template + governance header | ~500 |
+| RAG context (≤5 chunks) | ~750 |
+| keyFindings JSON | ~800 |
+| Conversation memory (trimmed to 6 messages) | ~700 |
+| **Input total** | **~2,750** |
+| Output budget | ~1,000 |
+
+Enforced by Shared Services: the prompt assembler hard-trims RAG context first, then memory, if the input exceeds 3,000 tokens. Overflow events are logged as observability metrics.
+
+---
+
+# 10. QA / Review Layer (Tool 7)
+
+## 10.1 Architecture: Deterministic-First
+
+~80% of validation is pure code; the LLM sees only narrow, structured questions. The QA layer reads the SAME resolved rule set (from the run context) that compute used.
+
+## 10.2 Validation Categories
+
+### Tier 1 — Deterministic (Code node; binary PASS/WARN/FAIL)
+
+| Category | Checks |
+|---|---|
+| **Calculation validation** | ytd_total == Σ monthly actuals (0.1% tolerance) per anchor GL; NOI == Revenue − OpEx; forecast_total == Σ forecast months per scenario; workbook keyFindings hash matches compute lineage hash |
+| **Period integrity** | forecastMonths strictly after actualsMonths; actuals+forecast == 12 (or flagged); derived period label consistent with forecastMonths[0]; trailing window == RF-1.trailingAvgWindow |
+| **Business rule compliance** | Scenario ordering (Downside ≤ Baseline ≤ Upside for NOI); adj percentages used == RF-2 effective values; anchor-GL KPI sourcing (RF-4); materiality-flagged lines (RF-5) each have commentary present |
+| **Workbook integrity** | All RF-6 required tabs present; GL column-A lookup intact; _PY_Data row alignment; no stale non-zero GLs outside current actuals set |
+| **Schema/data quality** | keyFindings fields present + typed; NOI margin within RF-5 plausible range; required anchor GLs present in actuals |
+
+### Tier 2 — LLM Structured Review (only if Tier 1 has no FAIL)
+
+Six fixed questions, answers restricted to PASS/FAIL/UNCERTAIN + one sentence:
+
+1. Commentary YTD Revenue matches keyFindings.ytdRevenue?
+2. Commentary NOI margin matches keyFindings.ytdNOIMargin?
+3. Top favourable/unfavourable variances cited match keyFindings arrays?
+4. **Every numeric claim in commentary is supported by keyFindings?**
+5. **Every [KB: ...] citation corresponds to a chunk actually retrieved this run?** ← retrieved-knowledge validation
+6. Commentary contains no estimates/calculations of its own?
+
+Question 5 closes the loop on RAG: the QA layer receives the retrieval log (chunk ids + sources) and verifies the AI cited only knowledge it was actually given — the direct hallucination indicator for the knowledge layer.
+
+### Source Attribution Check (deterministic, regex-based)
+
+Every sentence containing a number must contain a source tag (`[Compute:`, `[Yardi GL`, `[KB:`, `[Rule:`). Untagged numeric sentences → FAIL with the sentence quoted.
+
+## 10.3 Confidence Score
+
+```
+score = (Σ PASS + 0.5 × Σ WARN) / total checks
+weights: Tier-1 calculation & rule checks ×2 (failures here are worst)
+```
+
+| Score | Verdict | Action |
+|---|---|---|
+| ≥ 0.90 | PASS | Deliver with "✅ QA-verified" badge |
+| 0.75–0.89 | PASS-WITH-NOTES | Deliver + disclosure of WARNs |
+| 0.60–0.74 | RETRY | Auto-retry (max 2) with correction hints |
+| < 0.60 or any Tier-1 FAIL in calculation category | ESCALATE | Human review; do not deliver |
+
+## 10.4 Retry & Escalation Flow
+
+```
+[QA verdict]
+   ├── PASS / PASS-WITH-NOTES → deliver (badge + citations + confidence)
+   ├── RETRY (attempt ≤ 2)
+   │      ↓
+   │   classify failure:
+   │     • commentary-only issue → re-run AI Reasoning ONLY with hint:
+   │       "Previous draft failed QA: <issues>. Correct these; numbers unchanged."
+   │       (cheap — no recompute)
+   │     • compute/data issue → re-run capability workflow with hint in run context
+   │      ↓
+   │   [QA re-runs on new output] → back to verdict
+   └── ESCALATE
+          ↓
+       audit log: qa_result=ESCALATED, issues[]
+       notify user: "This output requires human review before delivery — <summary>"
+       notify reviewer channel (n8n Chat today; Teams @mention + Approval at migration)
+       hold artifact in yardi-output/_pending_review/
+```
+
+Retry budget is enforced by run context (`retryCount`), hard-capped at 2 — runaway-cost protection.
+
+## 10.5 QA Outputs (persisted per run)
+
+```json
+{
+  "runId": "...", "verdict": "PASS", "confidenceScore": 0.94,
+  "tier1": [{"check":"ytd_reconciliation_45990","result":"PASS"}, ...],
+  "tier2": [{"q":5,"result":"PASS"}, ...],
+  "attributionCoverage": 1.0,
+  "retryCount": 0,
+  "issues": []
+}
+```
+# 11. Shared Services
+
+Cross-cutting services every workflow consumes. Each is small, isolated, and maps to a Power Automate/Azure equivalent.
+
+## 11.1 Authentication & Authorization
+
+| Aspect | Today (n8n Chat) | Future (Teams) |
+|---|---|---|
+| Identity | n8n session user id | AAD identity (from Teams context) |
+| User registry | Google Sheet `Bessie_Config` → `Users` tab: userId, displayName, role, active | AAD security groups / SharePoint list |
+| Roles | `viewer` (KNOWLEDGE_QA + REPORT only), `analyst` (all capabilities), `admin` (+ config changes) | same roles, group-mapped |
+| Enforcement point | First Code node after trigger: lookup userId → role → allowed intents; unauthorized intent → refusal template (zero LLM cost) | PA condition on group membership |
+
+Principle of least privilege: role gates are per-intent, not all-or-nothing.
+
+## 11.2 Secrets Management
+
+| Secret | Location | Rotation |
+|---|---|---|
+| Anthropic / OpenAI / SerpAPI keys | n8n credential store (encrypted at rest — ensure `N8N_ENCRYPTION_KEY` is set) | Quarterly; calendar-driven |
+| Qdrant API key | Docker env var `QDRANT_API_KEY` | Quarterly |
+| Google OAuth | n8n credential store | Reconnect on expiry symptom (all-branches-not-found) |
+| Rules/config sheet IDs | Config Registry (not secret, but centralized) | — |
+
+Rules: no keys in Code nodes ever (`process.env.*` only); no keys in GitHub; future: Azure Key Vault at migration, referenced from PA connections.
+
+## 11.3 Configuration Registry
+
+Single Google Sheet `Bessie_Config` (tabs: `Properties`, `Users`, `RuleFamilies` [RF-1..RF-7 tabs], `System`), cached 15 min in workflow static data. `System` tab holds folder IDs, template filename, model names, token budgets, QA thresholds, retry caps, KB folder id, Qdrant collection name.
+
+**Everything that could plausibly change lives here. Zero hardcoded values in workflows.** Migration: 1:1 to SharePoint Lists.
+
+## 11.4 Prompt Template Store
+
+Templates versioned in GitHub `/prompts/` (source of truth) and mirrored into the Config sheet for runtime retrieval:
+
+| Template | Used by |
+|---|---|
+| `intent-router-v1` | Intent Router |
+| `governance-header-v7` | prepended to ALL reasoning prompts |
+| `forecast-commentary-v2` | WF-Forecast |
+| `variance-narrative-v1` | WF-Variance |
+| `kb-answer-v1` | KNOWLEDGE_QA path |
+| `qa-tier2-review-v1` | QA Layer |
+
+Changing a template = GitHub PR + sheet update; runs log which template version they used (lineage).
+
+## 11.5 Audit Logging
+
+Google Sheet `Bessie_Audit_Log` (append-only; annual archive), one row per run:
+
+`run_id, timestamp, user_id, role, channel, intent, property, period, fiscal_year, rules_versions, template_versions, files_found, kb_chunks_used, qa_verdict, confidence, retry_count, qa_issues, output_file, tokens_router, tokens_reasoning, tokens_qa, duration_s, error`
+
+Plus secondary logs: `KB_Ingest_Log`, `Retrieval_Log` (chunk ids + scores per query — feeds observability). Migration: SharePoint List or Dataverse.
+
+## 11.6 Caching
+
+| Cache | Key | TTL | Benefit |
+|---|---|---|---|
+| Config/rules | sheet tab | 15 min | avoids re-reading config every run |
+| KB retrieval | sha1(query+filters) | 60 min | repeated questions cost zero embeddings |
+| Template store | template id | 15 min | — |
+
+Implementation: n8n workflow static data today; Redis only if volume demands (not yet). PA equivalent: cached SharePoint reads / Dataverse.
+
+---
+
+# 12. Observability
+
+## 12.1 Metrics Emitted (per run, to `Bessie_Metrics` sheet)
+
+| Domain | Metrics |
+|---|---|
+| **Token usage** | tokens by stage (router/reasoning/QA), by model, by intent; cost estimate per run |
+| **Latency** | end-to-end duration; per-layer durations (data fetch, compute, retrieval, reasoning, QA) |
+| **Retrieval quality** | top-chunk score; mean score of used chunks; % runs with zero chunks above threshold; cache hit rate |
+| **Workflow failures** | error node, error class (auth / data-not-found / schema / API timeout), retry outcomes |
+| **QA outcomes** | verdict distribution; confidence histogram; Tier-1 failure category counts; escalation rate |
+| **Hallucination indicators** | attribution coverage < 1.0 count; Tier-2 Q4/Q5 failures (unsupported numbers / uncited KB); router CLARIFY rate |
+
+## 12.2 Dashboard
+
+**Today:** Google Sheets dashboard tab with pivot charts over `Bessie_Metrics` — zero new infrastructure, adequate at current volume. Panels: daily runs by intent; token cost trend; QA verdict mix; escalations (list); retrieval score trend; failure Pareto.
+
+**Future:** Power BI over SharePoint/Dataverse logs (native at migration); optional Grafana + Prometheus if n8n phase extends and volume grows.
+
+## 12.3 Alerts
+
+| Condition | Action (today → future) |
+|---|---|
+| Any ESCALATE verdict | Reviewer notification (n8n Chat message → Teams @mention) |
+| Workflow hard failure | Admin notification |
+| Retrieval zero-hit rate > 20% over 24h | Flag "knowledge gap" — feeds KB authoring backlog |
+| Knowledge doc `last_reviewed` > 2 quarters | Weekly stale-knowledge digest to doc owners |
+| Daily token cost > threshold (Config) | Admin notification |
+
+---
+
+# 13. Phased Implementation Roadmap
+
+**Phase 0 — Foundations (Week 1)**
+- Config Registry sheet (Properties, Users, System) + cache helper
+- Audit log v2 schema; run_id + lineage plumbing in existing Tool 6
+- AuthZ code node (user registry + role gate) on the Chat entry
+- Governance header v7 into current prompt
+- Exit: every current run is authenticated, logged with lineage, and governed
+
+**Phase 1 — Intent Router + Rules Engine (Weeks 2–3)**
+- Haiku router + Switch; ADMIN + OUT_OF_SCOPE deterministic paths
+- RF-1..RF-6 tabs populated; compute-financials refactored to read RF-1/RF-2/RF-4 from config (remove in-code constants)
+- WF-Forecast becomes a routed capability workflow (existing Tool 6 chain wrapped)
+- Exit: rules changed in the sheet change compute behavior with zero code edits
+
+**Phase 2 — RAG (Weeks 4–7)**
+- Author first 8 KB docs (methodology, GL guide, variance methodology, commentary style, KPI definitions, materiality, glossary, FY26 assumptions)
+- Qdrant collection + WF-KB-Ingest + WF-KB-Retrieve (with cache + retrieval log)
+- KNOWLEDGE_QA path live end-to-end; RAG context into forecast commentary
+- Exit: doc edit in Drive propagates to answers within 24h with citation
+
+**Phase 3 — QA Layer (Weeks 8–10)**
+- Tier-1 checks module (all five categories) + attribution regex check
+- Tier-2 structured review (Haiku-first); confidence scoring; retry/escalation flow; `_pending_review` holding
+- Wire QA between reasoning and delivery in WF-Forecast
+- Exit: known-bad fixture set (10 good / 5 bad) classified correctly
+
+**Phase 4 — Capability Expansion (Weeks 11–15)**
+- `variance-calc.js` + WF-Variance (reuses data layer, RF-5, QA)
+- WF-Report (workbook/report from existing computed runs — no recompute)
+- `budget-build.js` + WF-Budget (driver-based, RF-2/RF-7)
+- WF-Plan (scenario what-ifs over compute layer)
+- Exit: all five domains routed and QA-gated
+
+**Phase 5 — Scale & Integrate (Weeks 16+)**
+- Multi-property batch wrapper (loop over Properties registry; consolidated summary)
+- Yardi YDC API spike → replace Drive branches in data layer (envelope unchanged)
+- Observability dashboard hardening; alert tuning
+- Migration-readiness review (see §14 gates)
+
+---
+
+# 14. Migration Strategy — SharePoint, Teams, Power Automate
+
+## 14.1 Component Mapping
+
+| Layer / Service | n8n implementation | Target implementation |
+|---|---|---|
+| Interface | n8n Chat | Teams + Azure Bot / PA Teams trigger; Adaptive Cards |
+| Intent Router | Haiku HTTP + Switch | PA Switch + HTTP (Azure OpenAI/Anthropic) or AI Builder |
+| Capability workflows | Sub-workflows | PA child flows (contracts already defined) |
+| Financial Data | Drive nodes | SharePoint connector or YDC HTTP (preferred) |
+| Rules Engine | Google Sheet tabs | SharePoint Lists / Dataverse (1:1) |
+| Compute | JS Code nodes | **Office Scripts** (JS→TS port) or Azure Functions |
+| Workbook generation | SheetJS | **Office Script on live Excel — CF + dropdowns preserved (limitation removed)** |
+| RAG ingestion | n8n scheduled flow | PA scheduled flow + SharePoint file triggers |
+| Vector DB | Qdrant Cloud | Unchanged (HTTPS API) or Azure AI Search |
+| Embeddings | OpenAI | Azure OpenAI (same model family — no re-embedding) |
+| Prompt store | GitHub + sheet | GitHub + SharePoint list |
+| Audit/metrics | Google Sheets | SharePoint Lists / Dataverse + Power BI |
+| Approvals | Notification + hold folder | PA Approvals (native) |
+| Secrets | n8n credentials + env | Azure Key Vault + PA connections |
+
+## 14.2 Migration Order (lowest risk first)
+
+1. **Workbook generation → Office Script** (immediate quality gain: formatting preserved; smallest blast radius)
+2. **Document/knowledge store → SharePoint** (enables SharePoint-native ingestion triggers)
+3. **Config/rules/audit → SharePoint Lists** (unlocks PA Approvals on rule changes)
+4. **Interface → Teams** (user-facing switch; everything behind contracts is unchanged)
+5. **Orchestration → PA child flows** (last — by now every dependency is already Microsoft-side)
+6. **Data → YDC API** (independent track; can happen any time after Phase 5 spike)
+
+## 14.3 Migration Gates (per component)
+
+- Contract parity test: same inputs → byte-equivalent outputs (compute) or schema-equivalent (others)
+- Dual-run window: n8n and PA versions run in parallel on identical inputs for ≥ 5 runs; diffs reviewed
+- Audit continuity: run_ids and lineage uninterrupted across the cutover
+- Rollback: previous n8n workflow retained, disabled-not-deleted, for 60 days
+
+## 14.4 Design Decisions Already Made for Migration Ease
+
+- Compute modules are pure functions — no n8n API usage inside math → direct TS port
+- Layer contracts are JSON schemas — PA child-flow I/O maps 1:1
+- Nothing reads `channel` except final formatting → Teams swap is one component
+- Config-driven everything → migration moves tables, not logic
+- Qdrant + OpenAI chosen for platform-agnostic HTTPS APIs → survive the migration unchanged
+
+---
+
+# 15. Risks & Best Practices
+
+## 15.1 Risk Register
+
+| Risk | L | I | Mitigation |
+|---|---|---|---|
+| Rules sheet edited incorrectly (bad threshold) | M | H | RF change log tab + effective dating; QA validates compute used current effective rules; future: SharePoint approval on edits |
+| Router misclassification sends request to wrong domain | M | M | Confidence < 0.6 → CLARIFY; router accuracy tracked in metrics; misroutes correctable by user in one turn |
+| Stale KB doc makes AI confidently wrong | M | H | Quarterly review cadence + stale-knowledge alerts; QA Q5 verifies citations against actual retrieval; deprecated docs auto-purged from index |
+| LLM QA false positives block good output | M | M | Deterministic checks carry 2× weight; Haiku-first with Sonnet escalation on UNCERTAIN; thresholds tuned after 20 production runs |
+| Retry loops raise cost | L | M | Hard cap 2; commentary-only retries skip recompute; retries logged + alerted |
+| Token budget creep as KB grows | M | M | Assembler hard-trims to 3,000 input tokens; overflow metric alerts; retrieval capped at 5 chunks |
+| Google OAuth silent expiry | M | M | Known symptom documented (all-branches-not-found); alert on that signature; quarterly reconnect calendar |
+| Config sheet as single point of failure | L | H | Nightly config export to GitHub (versioned backup); cache serves last-good on read failure |
+| n8n task-runner binary/module constraints (known) | — | — | Already mitigated: `N8N_DEFAULT_BINARY_DATA_MODE=default`; binary via `$input.all()`; SheetJS accepted until Office Script migration |
+
+## 15.2 Best Practices (operating rules)
+
+1. **Deterministic-first, always.** New capability = compute module first, AI commentary second, QA checks third — in that order.
+2. **Config before code.** If a value could change, it goes in the registry on day one.
+3. **One concept per KB chunk; five great docs beat fifty mediocre ones.**
+4. **Never trust an untested threshold.** QA and router thresholds are tuned against labeled fixtures before production reliance.
+5. **Version everything, log versions everywhere.** Every run records rule, template, and module versions — that's what makes an audit answerable.
+6. **Escalation is a feature.** A run held for human review is the system working, not failing.
+
+---
+
+# 16. GitHub Repository Updates
+
+| Path | Action |
+|---|---|
+| `/docs/bessie-platform-architecture-v2.md` | **NEW** — this document |
+| `/docs/rag-architecture.md` | **NEW** — §8 expanded with ingestion/retrieval node configs |
+| `/docs/qa-review-agent.md` | **NEW** — §10 expanded with full check implementations |
+| `/docs/business-rules-engine.md` | **NEW** — RF-1..RF-7 schemas + change process |
+| `/docs/migration-playbook.md` | **NEW** — §14 with per-component runbooks |
+| `/docs/system-prompt.md` | **UPDATE** — v7 governance header + template-store note |
+| `/prompts/*` | **NEW** — versioned prompt templates (router, governance, commentary, QA) |
+| `/code/intent-router-parse.js` | **NEW** |
+| `/code/auth-user.js`, `/code/sanitize-input.js` | **NEW** |
+| `/code/rules-engine-read.js` | **NEW** — config fetch + effective-date resolution + cache |
+| `/code/kb-chunker.js`, `/code/kb-retrieval.js` | **NEW** |
+| `/code/qa-tier1-checks.js`, `/code/qa-confidence.js`, `/code/qa-attribution.js` | **NEW** |
+| `/code/variance-calc.js`, `/code/budget-build.js` | **NEW** (Phase 4) |
+| `/workflows/*.json` | **UPDATE** — export after each phase exit |
+| `/CLAUDE.md` | **UPDATE** — platform summary + layer map + phase status |
+
+---
+
+# Appendix A — System Prompt v7 (delta from v6)
+
+Additions:
+1. Governance header (§9.4) prepended — verbatim, non-negotiable
+2. Source-tag taxonomy: `[Compute: …] [Yardi GL …] [KB: file §section] [Rule: RF-n]`
+3. Removal of tool-selection prose (router now decides — the reasoning prompt no longer lists tools)
+4. Per-domain templates replace the single monolithic prompt (forecast/variance/KB-answer variants)
+5. Date injection retained: `{{ $now.format('YYYY-MM-DD') }}`
+
+# Appendix B — "10× Test" Answers
+
+| Dimension | 10× today | Holds? |
+|---|---|---|
+| Properties (7 → 70) | Registry rows; batch wrapper loops registry | ✅ |
+| Users (few → dozens) | Users tab + role gates; Teams/AAD at scale | ✅ |
+| KB docs (8 → 200) | Ingestor is incremental; retrieval filtered + capped; embedding cost negligible | ✅ |
+| Requests/day (10 → 100) | Router sheds non-compute intents cheaply; caching; n8n queue mode available; PA scales natively post-migration | ✅ |
+| Rule changes (quarterly → weekly) | Effective-dated config rows; no deployments | ✅ |
