@@ -1,0 +1,258 @@
+# Phase 0 Setup Guide — Foundations
+
+**Scope:** Config Registry · Authorization Gate · Audit Log v2 with Run IDs · Governance Prompt v7
+**Time required:** ~2–3 hours
+**Prerequisite:** the working forecasting agent (Tool 6 v4.1) as of 2026-07-01
+**Golden rule:** do not start a step until the previous step's verification passes.
+
+---
+
+## Before you start — two concepts in plain English
+
+**Configuration vs. code.** Today, values like "which properties exist" live inside JavaScript. Phase 0 moves them into a Google Sheet. A sheet can be edited by anyone on the team without touching n8n, it has built-in edit history, and at migration time it converts 1:1 into SharePoint Lists. This single pattern — *config in tables, logic in code* — is the backbone of Power Automate portability.
+
+**Run ID.** A run ID is a unique serial number stamped on every forecast run (it looks like `3f8a1c2e-...`). Every audit row, every workbook, every answer carries it. When someone asks "where did this number come from?" three months from now, the run ID is how you answer in 30 seconds instead of never.
+
+---
+
+## STEP 1 — Create the Config Registry (Google Sheets, no n8n yet)
+
+### 1.1 Create the spreadsheet
+
+1. In Google Drive, at the same level as your `yardi-input` folder, create a new **Google Sheet** (New → Google Sheets — NOT an uploaded Excel file; n8n's Sheets node works best with native sheets).
+2. Name it exactly: **`Bessie_Config`**
+
+### 1.2 Create three tabs with exact headers
+
+Rename the default tab and add two more (the tab names and header spellings must match exactly — n8n reads them case-sensitively):
+
+**Tab 1: `Properties`** — row 1 headers:
+
+| propertyCode | friendlyName | yardiCode | active | fiscalYearStartMonth |
+|---|---|---|---|---|
+| prop01 | TO | dunf0045 | TRUE | 7 |
+| prop02 | TP | | TRUE | 7 |
+| prop03 | LP | | TRUE | 7 |
+| prop04 | BP | | TRUE | 7 |
+| prop05 | 44B | balli118 | TRUE | 7 |
+| prop06 | 118B | | TRUE | 7 |
+| prop07 | 99D | davis099 | TRUE | 7 |
+
+**Tab 2: `Users`** — row 1 headers:
+
+| userId | displayName | role | active |
+|---|---|---|---|
+| n8n-chat-default | n8n Chat User | analyst | TRUE |
+
+(One row for now. When Teams arrives, each colleague gets a row with their Azure AD ID. Roles: `viewer`, `analyst`, `admin`.)
+
+**Tab 3: `System`** — row 1 headers:
+
+| key | value | notes |
+|---|---|---|
+| templateFileName | Quarterly_Forecast_Template.xlsx | Excel template in Drive |
+| outputFolderName | yardi-output | where workbooks land |
+| inputFolderName | yardi-input | Yardi export files |
+| maxRetries | 2 | QA retry cap (Phase 3) |
+| systemPromptVersion | 7 | governance prompt in use |
+
+### ✅ Step 1 verification
+
+1. **Accomplished:** one Google Sheet, three tabs, headers exactly as above, 7 property rows + 1 user row + 5 system rows.
+2. **Verify:** re-open the sheet; confirm tab names have no leading/trailing spaces (click each tab name — a stray space is the #1 cause of "sheet not found" later).
+3. **Expected output:** n/a (no n8n yet).
+4. **Next:** wire the Users tab into the chat workflow as an authorization gate — we build the sheet first because the gate reads from it.
+
+---
+
+## STEP 2 — Authorization Gate (Bessie chat workflow)
+
+We insert three nodes between the Chat Trigger and the AI Agent. Nothing about the AI Agent or Tool 6 changes.
+
+**Target shape:**
+
+```
+[When chat message received] → [Get Users] → [Authorize User] → [IF Authorized]
+                                                                   ├─ true  → [AI Agent]  (existing)
+                                                                   └─ false → [Deny Response]
+```
+
+### 2.1 Node: "Get Users" (Google Sheets)
+
+1. Open **Bessie - SFA Chat Agent**. Click the connection line between **When chat message received** and **AI Agent** — a small **+** appears; click it and search **Google Sheets**.
+2. Configure:
+
+| Setting | Value |
+|---|---|
+| Credential | your existing "Google Drive account" (same Google account works for Sheets) |
+| Resource | Sheet Within Document |
+| Operation | Get Row(s) |
+| Document | From list → **Bessie_Config** |
+| Sheet | From list → **Users** |
+| (Filters) | leave empty — return all rows |
+
+3. Rename the node to exactly **`Get Users`** (double-click its title).
+4. Settings tab → **Always Output Data: ON**.
+
+> **Why read the sheet every run instead of caching?** At your volume (a handful of runs a day) a sheet read adds ~1 second and zero token cost. Caching (15-min TTL in workflow static data) is a documented Phase 1 optimization — skipping it now keeps this step simple and the behavior easy to reason about. Trade-off acknowledged deliberately.
+
+### 2.2 Node: "Authorize User" (Code)
+
+1. Add a **Code** node after Get Users. Rename it exactly **`Authorize User`**.
+2. Paste the full contents of **`code/auth-user.js`** (delivered with this guide).
+3. What the code does, in plain English: it takes the rows from Get Users, looks for the current user's ID with `active = TRUE`, maps their role to a list of allowed request types, and outputs either `authorized: true` (plus the original chat message, passed through) or `authorized: false` with a polite denial message. The user ID is currently a fixed value `n8n-chat-default` because the n8n chat window doesn't identify individual people — the chat is already protected by your n8n login. The code has a clearly marked single line to swap when Teams (which *does* send real user IDs) becomes the interface.
+
+### 2.3 Node: "IF Authorized" (IF)
+
+1. Add an **IF** node after Authorize User. Rename it **`IF Authorized`**.
+2. Condition: **Boolean** → Value 1: `={{ $json.authorized }}` → is **true**.
+3. Connect the **true** output to the existing **AI Agent** node.
+4. **Important — AI Agent input mapping:** the AI Agent previously received `chatInput` directly from the trigger. It now receives it via the gate. Open the AI Agent node; if its "Text" / prompt source field references the trigger, change it to: `={{ $json.chatInput }}` (the Authorize User node passes `chatInput` through untouched).
+
+### 2.4 Node: "Deny Response" (Set)
+
+1. From **IF Authorized**'s **false** output, add a **Set** node named **`Deny Response`**.
+2. Add one string field: name `output`, value `={{ $json.denialMessage }}`.
+3. This ends the false branch — the chat shows the denial text and no LLM was ever called (zero token cost for unauthorized requests — a Phase 0 governance and cost win in one).
+
+### ✅ Step 2 verification
+
+1. **Accomplished:** every chat message passes an authorization check before the AI runs.
+2. **Verify (positive):** chat "hello" → Bessie replies normally. In the execution log you should see Get Users → Authorize User → IF (true) → AI Agent.
+3. **Verify (negative):** in the Users sheet, set the `active` cell to `FALSE`. Chat "hello" again → you should get the "Access denied…" message and the execution log must show **no** AI Agent / Anthropic call. **Set it back to TRUE afterwards.**
+4. **Expected output:** normal Bessie behavior when authorized; instant polite refusal when not.
+5. **Troubleshooting:** *"Sheet not found"* → tab name has a space. *AI Agent gets empty input* → its prompt field still points at the trigger; change to `{{ $json.chatInput }}` per 2.3.4.
+6. **Next:** the audit log — so that every authorized run leaves a permanent trace.
+
+---
+
+## STEP 3 — Audit Log v2 with Run IDs (inside Tool 6)
+
+### 3.1 Create the log sheet
+
+1. Create a second Google Sheet named exactly **`Bessie_Audit_Log`**, tab renamed to **`Runs`**.
+2. Row 1 headers — one column each, exact spelling (these match the code's field names):
+
+```
+run_id | timestamp | user_id | channel | intent | property_code | period | fiscal_year | actuals_months | files_found | warning_flags | module_versions | rules_versions | template_versions | qa_verdict | confidence_score | retry_count | output_file | drive_link | duration_s | error_message
+```
+
+Empty-for-now columns (`rules_versions`, `qa_verdict`, `confidence_score`) are deliberate: **the schema anticipates Phases 1–3 so the sheet never needs restructuring** — append-only logs should never have columns inserted later.
+
+### 3.2 Insert two nodes in Tool 6
+
+Open **Tool — Compute Financials**. Current tail: `… → Upload file → Format Output`. New tail:
+
+```
+… → Upload file → [Build Audit Row] → [Append Audit Log] → [Format Output]
+```
+
+**Node: "Build Audit Row" (Code)**
+1. Click the connection between **Upload file** and **Format Output**, insert a **Code** node, rename exactly **`Build Audit Row`**.
+2. Paste **`code/build-audit-row.js`**. Plain English: it generates the run ID, gathers what happened this run (property, derived period, which files were found, any warnings, the output file link, how long the run took), and shapes it into one row whose field names match the sheet headers exactly.
+3. Settings → Always Output Data: ON.
+
+**Node: "Append Audit Log" (Google Sheets)**
+1. Insert after Build Audit Row, rename **`Append Audit Log`**.
+2. Configure:
+
+| Setting | Value |
+|---|---|
+| Credential | Google Drive account |
+| Resource | Sheet Within Document |
+| Operation | **Append Row** |
+| Document | **Bessie_Audit_Log** |
+| Sheet | **Runs** |
+| Mapping Column Mode | **Map Automatically** (field names match headers — this is why exact spelling mattered) |
+
+3. Settings → Always Output Data: ON, and **On Error: Continue** — a logging hiccup must never break a forecast (error handling by design: the forecast is the product; the log is the trace).
+
+### 3.3 Replace Format Output's code
+
+The old Format Output read the upload result positionally from `$input` — but the upload is no longer the immediately-previous node. Replace its code entirely with **`code/format-output-final.js`**. Two changes inside: every reference is now **by node name** (position-independent — also the pattern Power Automate uses, where actions reference each other's outputs explicitly), and the response now includes **`runId`** so the agent can cite it.
+
+### ✅ Step 3 verification
+
+1. **Accomplished:** every Tool 6 run writes one audit row and returns a run ID.
+2. **Verify:** chat "Generate a forecast for prop01". Then open Bessie_Audit_Log → Runs: exactly **one new row**, with a UUID in run_id, correct property/period, `files_found` listing what exists, a Drive link, and a plausible `duration_s`. Bessie's chat reply should end with `Run ID: <same UUID>` (that part appears after Step 4's prompt update; for now confirm the row).
+3. **Expected output:** the forecast works exactly as before — same workbook, same numbers — plus the audit row. If the forecast broke, the usual suspect is Format Output still containing old code (it references `$input.first()` — must be the new named-reference version).
+4. **Troubleshooting:** *Row appears but columns misaligned* → a header is misspelled vs. the code's field names; fix the header, not the code. *No row, forecast fine* → check Append Audit Log's error output; likely Document/Sheet selection.
+5. **Next:** the governance prompt — the rules that make Bessie's words as trustworthy as Tool 6's numbers.
+
+---
+
+## STEP 4 — Governance Prompt v7
+
+1. Open the **AI Agent** node → System Message. Select all, delete, paste the full contents of **`docs/system-prompt-v7.md`**.
+2. Confirm the field is in **expression mode** (the `{{ $now.format('YYYY-MM-DD') }}` date injection must render, not appear literally).
+3. What v7 adds over v6, in plain English:
+   - **Seven non-negotiable rules** at the top: never invent numbers, never do arithmetic, never name GLs it wasn't given, tag every figure with its source, disclose data warnings first, admit uncertainty, and always print the Run ID.
+   - **Source tags** like `[Compute: keyFindings.ytdRevenue]` after every figure — the visible thread from any sentence back to deterministic code. (In Phase 3, the QA agent will machine-check these tags; writing them now builds the habit and the test data.)
+4. **Save and Publish** the Bessie workflow.
+
+### ✅ Step 4 verification
+
+1. **Accomplished:** Bessie's language layer is governed; every claim is attributable.
+2. **Verify:** run "Generate a forecast for prop01" and check the reply for (a) source tags on the KPI lines, (b) `Run ID:` at the end matching the newest audit row, (c) today's correct date behavior (no 2025 hallucinations). Then ask a trap question: *"What's your best guess for prop01's insurance expense next year?"* — Bessie must decline to estimate ("not available in this run" or equivalent), not produce a number.
+3. **Expected output:** same forecast quality, now with citations and traceability.
+4. **Next:** final end-to-end check, then GitHub.
+
+---
+
+## STEP 5 — End-to-End Verification (Phase 0 exit criteria)
+
+Run all five; all must pass:
+
+| # | Test | Pass condition |
+|---|---|---|
+| 1 | Normal forecast (prop01) | Workbook correct, reply has source tags + Run ID, one audit row |
+| 2 | Unauthorized user (Users.active=FALSE, then back) | Denial message; zero LLM calls in execution log |
+| 3 | Trap question (estimate request) | Declines to invent a number |
+| 4 | Audit trace | Run ID in chat reply == run_id of newest sheet row |
+| 5 | Regression | Workbook numbers identical to a pre-Phase-0 run for the same inputs |
+
+**Phase 0 is complete when all five pass.** Next phase: **Phase 1 — Intent Router + Business Rules Engine**, which moves the scenario percentages out of `compute-financials-v4.js` into config (this is why the Config Registry came first) and adds the Haiku-class router (this is why roles already list allowed intents).
+
+---
+
+## GitHub Updates
+
+**Folder structure after this phase:**
+
+```
+n8n-SFA-Agents/
+├── CLAUDE.md                      (update)
+├── code/
+│   ├── auth-user.js               (new)
+│   ├── build-audit-row.js         (new)
+│   ├── format-output-final.js     (replace)
+│   └── …existing files
+└── docs/
+    ├── system-prompt.md           (replace with v7)
+    ├── phase0-setup-guide.md      (new — this document)
+    └── …existing files
+```
+
+**CLAUDE.md — add under "Current Phase":**
+
+```markdown
+## Phase 0 — Foundations (✅ Complete YYYY-MM-DD)
+- Config Registry: Google Sheet `Bessie_Config` (Properties / Users / System) — config-driven,
+  maps 1:1 to SharePoint Lists at migration
+- Authorization gate on chat entry (role → allowed intents; deny path costs zero tokens).
+  n8n Chat has no per-user identity; fixed identity `n8n-chat-default` until Teams (one-line swap, marked in auth-user.js)
+- Audit Log v2: `Bessie_Audit_Log` — one append-only row per run with run_id (UUID),
+  lineage (module/template versions), files found, warnings, duration. Schema pre-provisioned
+  for Phase 1 (rules_versions) and Phase 3 (qa_verdict, confidence_score)
+- System prompt v7: governance header (no invented numbers, no arithmetic, source tags,
+  run-ID citation). Format Output now uses named-node references (position-independent).
+```
+
+**Commit sequence:**
+
+| Milestone | Message |
+|---|---|
+| After Step 2 | `phase0: authorization gate on chat entry (Users registry, role gates, zero-token deny path)` |
+| After Step 3 | `phase0: audit log v2 with run_id lineage; Format Output → named-node references` |
+| After Step 4 | `phase0: system prompt v7 — governance header, source attribution, run-ID citation` |
+| After Step 5 | `phase0: complete — foundations verified (auth, audit, governance); docs + setup guide` |
